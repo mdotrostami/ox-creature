@@ -1,12 +1,12 @@
 {
   "status": "action-rejected",
-  "cycle": 32,
-  "summary": "LLM action rejected before commit: src/main.rs mutation would break protected runtime command surface; missing markers: mod self_build;, llm-config-check, self-build-rate-seconds, self-build-context, llm-action-from-response, self-build-step, self-build-ready-check, self_build::self_build_rate_seconds(), self_build::self_build_context(&args), self_build::llm_action_from_response(&args), self_build::self_build_step(&args), self_build::self_build_ready_check()",
-  "commit_message": "self-build: learn from rejected cycle 32",
+  "cycle": 33,
+  "summary": "no valid LLM action was available for this self-build cycle",
+  "commit_message": "self-build: learn from rejected cycle 33",
   "should_continue": true,
   "ready_for_judgment": false,
   "changed_files": [
-    "state/self-build-rejections/cycle-000032.md",
+    "state/self-build-rejections/cycle-000033.md",
     "EXPERIENCE.md",
     "state/self-build.json"
   ],
