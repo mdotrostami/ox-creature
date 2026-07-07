@@ -1,7 +1,7 @@
 {
-  "cycle": 28,
+  "cycle": 29,
   "phase": "self-building",
-  "status": "mutation-applied",
-  "last_summary": "Create exactly one missing product cell.",
+  "status": "action-rejected",
+  "last_summary": "task 006 validation failed after rollback: validation command failed `cargo fmt --all --check`\nstdout:\nDiff in /home/runner/work/ox-creature/ox-creature/src/main.rs:17:\n         \"creature-init\" => {\n             let json_flag = args.iter().any(|a| a == \"--json\");\n             let workspace_dir = Path::new(\".creature\");\n-            \n+\n             let status = if workspace_dir.exists() {\n                 \"validated\"\n             } else {\nDiff in /home/runner/work/ox-creature/ox-creature/src/main.rs:36:\n                 });\n                 println!(\"{}\", serde_json::to_string_pretty(&output).unwrap());\n             } else {\n-                println!(\"Creature workspace {} at {}\", status, workspace_dir.display());\n+                println!(\n+                    \"Creature workspace {} at {}\",\n+                    status,\n+                    workspace_dir.display()\n+                );\n             }\n         }\n         _ => {\n\nstderr:\n",
   "ready_for_judgment": false
 }
