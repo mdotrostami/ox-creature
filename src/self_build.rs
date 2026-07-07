@@ -231,6 +231,8 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
     let seed = read_optional("SEED.md");
     let experience = read_optional("EXPERIENCE.md");
     let memory = load_memory()?;
+    let allowed_file_snapshots =
+        allowed_file_snapshots(current_task.as_ref(), config.max_bytes_per_file);
 
     let context = json!({
         "project": "ox-creature",
@@ -256,6 +258,7 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "The runtime may run deterministic repair such as rustfmt before validation; the LLM still owns the semantic patch.",
             "If failure_memory.latest_repair_directive is present, treat it as mandatory recovery instruction for the next action.",
             "If editing src/main.rs, preserve the existing command router and all self-build commands. Add new commands; never replace the router.",
+            "The allowed_file_snapshots contain the current full or truncated content of files you may edit; use them as the base. Never invent a shortened replacement for an existing source file.",
             "On repeated rejection, do not retry the same shape. Read failure_memory and produce a smaller corrected patch.",
             "If the task cannot be safely done, use decision=sleep or stop with a precise reason; do not fake progress.",
             "Do not declare ready_for_judgment while any task remains or any product proof is weak."
@@ -283,7 +286,8 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
         },
         "source_context": {
             "seed_excerpt": truncate(&seed, 5000),
-            "experience_excerpt": truncate(&experience, 5000)
+            "experience_excerpt": truncate(&experience, 5000),
+            "allowed_file_snapshots": allowed_file_snapshots
         },
         "required_response_contract": {
             "type": "json-only",
@@ -304,6 +308,7 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "rules": [
                 "Use the current_task object, not target_product examples, to choose work.",
                 "Return full file contents, not a diff.",
+                "For existing files, start from source_context.allowed_file_snapshots and preserve unrelated code exactly.",
                 "Prefer the plain content field for UTF-8 files.",
                 "Keep changes small and task-scoped.",
                 "No secret markers.",
@@ -319,6 +324,32 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&context).map_err(|err| err.to_string())?
     );
     Ok(())
+}
+
+fn allowed_file_snapshots(task: Option<&SelfBuildTask>, max_bytes_per_file: usize) -> Vec<Value> {
+    let Some(task) = task else {
+        return Vec::new();
+    };
+    let mut snapshots = Vec::new();
+    let max_snapshot_bytes = max_bytes_per_file.min(70_000);
+    for path in &task.allowed_files {
+        let exists = Path::new(path).is_file();
+        let content = read_optional(path);
+        let truncated = content.len() > max_snapshot_bytes;
+        snapshots.push(json!({
+            "path": path,
+            "exists": exists,
+            "content_hash": stable_content_hash(&content),
+            "content_truncated": truncated,
+            "content": truncate(&content, max_snapshot_bytes),
+            "mutation_rule": if exists {
+                "Return the complete updated file. Preserve all unrelated existing content from this snapshot."
+            } else {
+                "Create this file only if the current task requires it. Return complete file content."
+            }
+        }));
+    }
+    snapshots
 }
 
 pub fn llm_action_from_response(args: &[String]) -> Result<(), String> {
@@ -390,11 +421,11 @@ pub fn self_build_step(args: &[String]) -> Result<(), String> {
                     format!("failed to load LLM action: {err}"),
                 )?,
             },
-            None => rejection_cycle(
-                &config,
-                &mut state,
-                "no valid LLM action was available for this self-build cycle".to_string(),
-            )?,
+            None => {
+                let next_cycle = state.cycle + 1;
+                let (reason, diagnostics) = llm_unavailable_reason(next_cycle)?;
+                rejection_cycle_with_changed(&config, &mut state, reason, diagnostics)?
+            }
         }
     };
 
@@ -882,6 +913,58 @@ fn record_rollback_memory(
     write_json(MEMORY_PATH, &memory)
 }
 
+fn llm_unavailable_reason(cycle: u64) -> Result<(String, Vec<String>), String> {
+    let diagnostic_dir = "state/self-build-llm-diagnostics";
+    fs::create_dir_all(diagnostic_dir)
+        .map_err(|err| format!("failed to create {diagnostic_dir}: {err}"))?;
+    let diagnostic_path = format!("{diagnostic_dir}/cycle-{cycle:06}.json");
+
+    let selected_model = read_optional("state/llm-selected-model.txt")
+        .trim()
+        .to_string();
+    let action_error = read_optional("state/llm-action-error.txt");
+    let primary_extract_log = read_optional("state/llm-action-extract.log");
+    let repair_extract_log = read_optional("state/llm-repair-action-extract.log");
+    let response_content = read_optional("state/llm-response-content.txt");
+    let repair_response_content = read_optional("state/llm-repair-response-content.txt");
+
+    let diagnostic = json!({
+        "cycle": cycle,
+        "selected_model": selected_model,
+        "summary": "LLM did not produce a valid self-build action JSON for this cycle.",
+        "action_error_excerpt": truncate(&action_error, 4000),
+        "primary_extract_log_excerpt": truncate(&primary_extract_log, 4000),
+        "repair_extract_log_excerpt": truncate(&repair_extract_log, 4000),
+        "response_content_hash": stable_content_hash(&response_content),
+        "response_content_excerpt": truncate(&response_content, 4000),
+        "repair_response_content_hash": stable_content_hash(&repair_response_content),
+        "repair_response_content_excerpt": truncate(&repair_response_content, 4000),
+        "recovery_expectation": "Next cycle must use this diagnostic and return exactly one JSON action matching contracts/llm-next-action.schema.json."
+    });
+    write_json(&diagnostic_path, &diagnostic)?;
+
+    let mut reason = format!(
+        "no valid LLM action was available for this self-build cycle; diagnostic written to {diagnostic_path}"
+    );
+    if !selected_model.is_empty() {
+        reason.push_str(&format!("; selected_model={selected_model}"));
+    }
+    let useful_error = if !action_error.trim().is_empty() {
+        action_error
+    } else if !primary_extract_log.trim().is_empty() {
+        primary_extract_log
+    } else if !repair_extract_log.trim().is_empty() {
+        repair_extract_log
+    } else if !response_content.trim().is_empty() {
+        format!("response excerpt: {}", truncate(&response_content, 1200))
+    } else {
+        "no LLM response content was captured".to_string()
+    };
+    reason.push_str(&format!("; detail: {}", truncate(&useful_error, 1800)));
+
+    Ok((reason, vec![diagnostic_path]))
+}
+
 fn repair_directive_for_rejection(reason: &str, task_id: Option<&str>) -> String {
     let task_hint = task_id
         .map(|id| format!(" for current task {id}"))
@@ -901,9 +984,14 @@ fn repair_directive_for_rejection(reason: &str, task_id: Option<&str>) -> String
             "Recovery{task_hint}: the previous mutation failed validation. Use the validation stdout/stderr in failure_memory, keep the same task_id, reduce scope, and change only allowed files needed to make the exact validation command pass."
         );
     }
-    if reason.contains("no material file changes") || reason.contains("no valid LLM action") {
+    if reason.contains("no valid LLM action") || reason.contains("LLM did not produce") {
         return format!(
-            "Recovery{task_hint}: the previous cycle produced no useful patch. Use current_task.allowed_files and current_task.validation to create one concrete, non-placeholder, validating change."
+            "Recovery{task_hint}: the previous cycle did not produce valid action JSON. Read the LLM diagnostic artifact, then return exactly one raw JSON object matching contracts/llm-next-action.schema.json. Do not write prose, markdown, analysis, or code fences. Use current_task.allowed_files, source_context.allowed_file_snapshots, and current_task.validation to create one concrete validating change."
+        );
+    }
+    if reason.contains("no material file changes") {
+        return format!(
+            "Recovery{task_hint}: the previous cycle produced no material patch. Use current_task.allowed_files and current_task.validation to create one concrete, non-placeholder, validating change."
         );
     }
     format!(

@@ -4,153 +4,329 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this self-build run was requested
+        required: false
+        default: manual
   repository_dispatch:
-    types: [self-build-next]
+    types: [self-build-continue]
 
 permissions:
   contents: write
   actions: write
 
 concurrency:
-  group: ox-creature-self-build
+  group: ox-creature-self-build-main
   cancel-in-progress: false
 
 jobs:
   self-build:
+    name: self-build
     runs-on: ubuntu-latest
     env:
       CREATURE_LLM_BASE_URL: https://api.gapgpt.app/v1
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Configure Git actor
+      - name: Configure git author
         shell: bash
         run: |
           git config user.name "ox-creature"
-          git config user.email "actions@github.com"
+          git config user.email "ox-creature@users.noreply.github.com"
 
       - name: Read self-build delay
         shell: bash
         run: |
-          delay="$(python3 -c 'import json, pathlib; p=pathlib.Path("config/self-build.json"); print(int(json.loads(p.read_text()).get("loop_delay_seconds", 0)) if p.exists() else 0)')"
+          delay="$(python3 -c 'import json; import pathlib; p=pathlib.Path("config/self-build.json"); print(json.loads(p.read_text()).get("loop_delay_seconds", 0) if p.exists() else 0)')"
+          case "$delay" in
+            ''|*[!0-9]*) delay=0 ;;
+          esac
           echo "SELF_BUILD_DELAY_SECONDS=${delay}" >> "$GITHUB_ENV"
 
-      - name: Preflight
+      - name: Respect self-build rate
+        if: env.SELF_BUILD_DELAY_SECONDS != '0'
         shell: bash
-        run: |
-          mkdir -p state
-          set +e
-          {
-            cargo fmt --all --check
-            cargo test
-            cargo run -- preflight-check
-            cargo run -- self-build-rate-seconds
-            cargo run -- self-build-context --json > state/self-build-preflight-context.json
-          } > state/preflight.log 2>&1
-          status=$?
-          set -e
-          cat state/preflight.log
-          if [ "$status" -ne 0 ]; then
-            echo "PREFLIGHT_FAILED=true" >> "$GITHUB_ENV"
-            cp state/preflight.log state/workflow-failure.txt
-          else
-            echo "PREFLIGHT_FAILED=false" >> "$GITHUB_ENV"
-          fi
+        run: sleep "$SELF_BUILD_DELAY_SECONDS"
 
-      - name: Emit self-build context
+      - name: Runtime compile rescue gate
         shell: bash
         run: |
-          mkdir -p state
-          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
-            echo "Skipping LLM context because preflight failed; runtime will record recovery memory."
+          mkdir -p state/workflow-failures
+          if cargo check > state/workflow-preflight.log 2>&1; then
             exit 0
           fi
+
+          echo "Runtime failed to compile before self-build could run."
+          cat state/workflow-preflight.log
+
+          last_subject="$(git log -1 --pretty=%s)"
+          if [[ "$last_subject" != self-build:* ]]; then
+            echo "Head commit is not a self-build commit; refusing automatic revert."
+            exit 1
+          fi
+
+          failure_path="state/workflow-failures/run-${GITHUB_RUN_ID}.md"
+          {
+            echo "# Workflow compile recovery"
+            echo ""
+            echo "Head self-build commit was reverted because the runtime could not compile before recovery could run."
+            echo ""
+            echo "## Reverted commit"
+            git log -1 --oneline
+            echo ""
+            echo "## cargo check output"
+            echo '```text'
+            sed -n '1,200p' state/workflow-preflight.log
+            echo '```'
+          } > "$failure_path"
+
+          git revert --no-edit HEAD
+          {
+            echo ""
+            echo "## Self-build workflow recovery"
+            echo "Reverted broken self-build commit during run ${GITHUB_RUN_ID} because the runtime could not compile before recovery."
+          } >> EXPERIENCE.md
+          git add EXPERIENCE.md "$failure_path"
+          git commit --amend --no-edit
+          git push origin HEAD:main
+
+      - name: Baseline checks or recoverable failure
+        id: baseline
+        shell: bash
+        run: |
+          rm -f state/workflow-failure.txt
+          if ! cargo fmt --all --check > state/baseline-fmt.log 2>&1; then
+            { echo "cargo fmt --all --check failed"; cat state/baseline-fmt.log; } > state/workflow-failure.txt
+          elif ! cargo test > state/baseline-test.log 2>&1; then
+            { echo "cargo test failed"; cat state/baseline-test.log; } > state/workflow-failure.txt
+          elif ! cargo run -- preflight-check > state/baseline-preflight.log 2>&1; then
+            { echo "cargo run -- preflight-check failed"; cat state/baseline-preflight.log; } > state/workflow-failure.txt
+          fi
+
+      - name: Build self-build context
+        if: ${{ hashFiles('state/workflow-failure.txt') == '' }}
+        shell: bash
+        run: |
           cargo run -- self-build-context --json > state/self-build-context.json
 
-      - name: Ask LLM for one task-scoped mutation
+      - name: Discover model and ask for next action
+        if: ${{ hashFiles('state/workflow-failure.txt') == '' }}
         shell: bash
         run: |
-          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
-            echo "Skipping LLM because preflight failed."
-            exit 0
-          fi
           rm -f state/llm-next-action.json state/llm-action-error.txt state/llm-response.json state/llm-request.json
           if [ -z "${LLM_API_KEY:-}" ]; then
             echo "LLM_API_KEY secret is missing" > state/llm-action-error.txt
             exit 0
           fi
+
           base="${CREATURE_LLM_BASE_URL%/}"
-          if ! curl -fsS "$base/models" -H "Authorization: Bearer $LLM_API_KEY" > state/llm-models.json; then
+          if ! curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${LLM_API_KEY}" \
+            "${base}/models" > state/llm-models.json; then
             echo "model discovery failed" > state/llm-action-error.txt
             exit 0
           fi
-          model="$(python3 -c 'import json; data=json.load(open("state/llm-models.json")); models=[m.get("id","") for m in data.get("data",[]) if isinstance(m,dict)]; preferred=[m for m in models if "qwen" in m.lower() or "coder" in m.lower()]; print((preferred or models or [""])[0])')"
-          if [ -z "$model" ]; then
-            echo "model discovery returned no model id" > state/llm-action-error.txt
-            exit 0
-          fi
-          MODEL="$model" python3 -c 'import json, os; ctx=open("state/self-build-context.json").read(); req={"model":os.environ["MODEL"],"temperature":0.2,"messages":[{"role":"system","content":"You are ox-creature self-build. Return exactly one JSON object matching contracts/llm-next-action.schema.json. No markdown. Complete only the current task."},{"role":"user","content":ctx}]}; print(json.dumps(req))' > state/llm-request.json
-          if ! curl -fsS "$base/chat/completions" -H "Authorization: Bearer $LLM_API_KEY" -H "Content-Type: application/json" --data @state/llm-request.json > state/llm-response.json; then
-            echo "chat completion failed" > state/llm-action-error.txt
-            exit 0
-          fi
-          if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json > state/llm-action-extract.log 2>&1; then
-            cp state/llm-action-extract.log state/llm-action-error.txt
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          models = json.loads(Path('state/llm-models.json').read_text())
+          ids = []
+          for item in models.get('data', []):
+              model_id = item.get('id')
+              if isinstance(model_id, str):
+                  ids.append(model_id)
+          if not ids:
+              ids = ['default']
+          preferred = sorted(ids, key=lambda item: (('qwen' not in item.lower()) and ('coder' not in item.lower()), item.lower()))[0]
+          Path('state/llm-selected-model.txt').write_text(preferred)
+
+          context = Path('state/self-build-context.json').read_text()
+          system = (
+              'You are the ox-creature self-build model. Return exactly one JSON object. '
+              'No markdown, no code fences. The JSON must match contracts/llm-next-action.schema.json. '
+              'Complete only the current [NEXT] task using the allowed file snapshots. Preserve existing runtime commands.'
+          )
+          user = (
+              'Use this self-build context. Return a task-scoped mutation action with full file contents.\n\n'
+              + context
+          )
+          request = {
+              'model': preferred,
+              'messages': [
+                  {'role': 'system', 'content': system},
+                  {'role': 'user', 'content': user},
+              ],
+              'temperature': 0.2,
+          }
+          Path('state/llm-request.json').write_text(json.dumps(request, ensure_ascii=False))
+          PY
+
+          model="$(cat state/llm-selected-model.txt)"
+          if ! curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${LLM_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @state/llm-request.json \
+            "${base}/chat/completions" > state/llm-response.json; then
+            echo "chat completion failed for model ${model}" > state/llm-action-error.txt
             exit 0
           fi
 
-      - name: Apply one governed self-build step
+          if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json \
+            > state/llm-action-extract.log 2>&1; then
+            cp state/llm-action-extract.log state/llm-action-error.txt
+
+            python3 - <<'PYREPAIR'
+          import json
+          from pathlib import Path
+
+          context = Path('state/self-build-context.json').read_text() if Path('state/self-build-context.json').exists() else '{}'
+          response = Path('state/llm-response-content.txt').read_text() if Path('state/llm-response-content.txt').exists() else Path('state/llm-response.json').read_text()[:4000]
+          error = Path('state/llm-action-error.txt').read_text() if Path('state/llm-action-error.txt').exists() else 'unknown extraction error'
+          model = Path('state/llm-selected-model.txt').read_text().strip() if Path('state/llm-selected-model.txt').exists() else 'default'
+          request = {
+              'model': model,
+              'messages': [
+                  {
+                      'role': 'system',
+                      'content': 'You are a strict JSON repair cell for ox-creature self-build. Return exactly one raw JSON object matching contracts/llm-next-action.schema.json. No markdown, no code fences, no explanation.'
+                  },
+                  {
+                      'role': 'user',
+                      'content': 'The prior self-build response was rejected. Produce a corrected task-scoped action JSON only.\n\nExtraction error:\n' + error[:2000] + '\n\nPrior response content:\n' + response[:4000] + '\n\nSelf-build context:\n' + context[:12000]
+                  },
+              ],
+              'temperature': 0.0,
+          }
+          Path('state/llm-repair-request.json').write_text(json.dumps(request, ensure_ascii=False))
+          PYREPAIR
+
+            if curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${LLM_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d @state/llm-repair-request.json \
+              "${base}/chat/completions" > state/llm-repair-response.json; then
+              if cargo run -- llm-action-from-response state/llm-repair-response.json state/llm-next-action.json \
+                > state/llm-repair-action-extract.log 2>&1; then
+                rm -f state/llm-action-error.txt
+              else
+                {
+                  echo "primary extraction failed:"
+                  sed -n '1,160p' state/llm-action-extract.log
+                  echo ""
+                  echo "repair extraction failed:"
+                  sed -n '1,160p' state/llm-repair-action-extract.log
+                } > state/llm-action-error.txt
+              fi
+            else
+              {
+                echo "primary extraction failed:"
+                sed -n '1,160p' state/llm-action-extract.log
+                echo ""
+                echo "repair chat completion failed"
+              } > state/llm-action-error.txt
+            fi
+          fi
+
+          python3 - <<'PYRESP'
+          import json
+          from pathlib import Path
+          content = ""
+          try:
+              data = json.loads(Path('state/llm-response.json').read_text())
+              content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+          except Exception as exc:
+              content = f'failed to read LLM response: {exc}'
+          Path('state/llm-response-content.txt').write_text(str(content)[:4000])
+          if Path('state/llm-repair-response.json').exists():
+              try:
+                  data = json.loads(Path('state/llm-repair-response.json').read_text())
+                  repair_content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+              except Exception as exc:
+                  repair_content = f'failed to read LLM repair response: {exc}'
+              Path('state/llm-repair-response-content.txt').write_text(str(repair_content)[:4000])
+          PYRESP
+
+      - name: Apply one self-build cycle
         shell: bash
         run: |
-          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
+          if [ -f state/workflow-failure.txt ]; then
             cargo run -- self-build-step --workflow-failure state/workflow-failure.txt --json > state/self-build-result.stdout.json
           elif [ -f state/llm-next-action.json ]; then
             cargo run -- self-build-step --action state/llm-next-action.json --json > state/self-build-result.stdout.json
           else
+            if [ -f state/llm-action-error.txt ]; then
+              {
+                echo ""
+                echo "## LLM self-build action unavailable"
+                echo ""
+                echo '```text'
+                sed -n '1,160p' state/llm-action-error.txt
+                echo '```'
+              } >> EXPERIENCE.md
+            fi
             cargo run -- self-build-step --json > state/self-build-result.stdout.json
           fi
-          cat state/self-build-result.stdout.json
 
       - name: Commit self-build result
+        id: commit_result
         shell: bash
         run: |
-          python3 -c 'import json, os, subprocess; data=json.load(open("state/self-build-result.json")); files=list(dict.fromkeys(data.get("changed_files",[])+["state/self-build-result.json"])); files=[f for f in files if os.path.exists(f)]; subprocess.run(["git","add","--"]+files, check=True) if files else None'
+          python3 - <<'PY' > state/self-build-add-files.txt
+          import json
+          from pathlib import Path
+          result = json.loads(Path('state/self-build-result.json').read_text())
+          for path in result.get('changed_files', []):
+              print(path)
+          PY
+
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if [ -e "$path" ]; then
+              git add -- "$path"
+            else
+              git add -u -- "$path" || true
+            fi
+          done < state/self-build-add-files.txt
+
           if git diff --cached --quiet; then
-            echo "No self-build changes to commit."
-          else
-            message="$(python3 -c 'import json; print(json.load(open("state/self-build-result.json"))["commit_message"])')"
-            git commit -m "$message"
-            git push origin HEAD:main
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          message="$(python3 -c 'import json; print(json.load(open("state/self-build-result.json")).get("commit_message", "self-build: update"))')"
+          git commit -m "$message"
+          git push origin HEAD:main
+          echo "committed=true" >> "$GITHUB_OUTPUT"
 
       - name: Continue or request Judgment Day
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           should_continue="$(python3 -c 'import json; print(str(json.load(open("state/self-build-result.json")).get("should_continue", False)).lower())')"
           ready="$(python3 -c 'import json; print(str(json.load(open("state/self-build-result.json")).get("ready_for_judgment", False)).lower())')"
-          delay="$(python3 -c 'import json; print(int(json.load(open("state/self-build-result.json")).get("delay_seconds", 0)))')"
+
           if [ "$ready" = "true" ]; then
-            curl -fsS -X POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
+            curl --fail --silent --show-error \
+              -X POST \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/judgment-day.yml/dispatches" \
-              -d '{"ref":"main"}'
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/judgment-day.yml/dispatches" \
+              -d '{"ref":"main","inputs":{"reason":"creature-ready-for-judgment"}}'
             exit 0
           fi
+
           if [ "$should_continue" = "true" ]; then
-            if [ "$delay" -gt 0 ]; then
-              sleep "$delay"
-            fi
-            curl -fsS -X POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
+            curl --fail --silent --show-error \
+              -X POST \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/self-loop.yml/dispatches" \
-              -d '{"ref":"main"}'
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/self-loop.yml/dispatches" \
+              -d '{"ref":"main","inputs":{"reason":"self-build-continue"}}'
           fi
