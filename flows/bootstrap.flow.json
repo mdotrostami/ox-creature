@@ -1,0 +1,54 @@
+{
+  "flow_id": "ox_creature.bootstrap",
+  "version": "0.1.0",
+  "purpose": "Create the first lawful creature state from SEED.md and the tiny runtime.",
+  "inputs": [
+    "SEED.md",
+    "runtime_binary"
+  ],
+  "nodes": [
+    {
+      "id": "read_seed",
+      "kind": "deterministic_parse",
+      "output": "seed_text"
+    },
+    {
+      "id": "validate_laws",
+      "kind": "validator",
+      "requires": [
+        "read_seed"
+      ],
+      "output": "law_report"
+    },
+    {
+      "id": "validate_contracts",
+      "kind": "schema_check",
+      "requires": [
+        "validate_laws"
+      ],
+      "output": "contract_report"
+    },
+    {
+      "id": "validate_flows",
+      "kind": "flow_check",
+      "requires": [
+        "validate_contracts"
+      ],
+      "output": "flow_report"
+    },
+    {
+      "id": "emit_identity",
+      "kind": "presentation_blocks",
+      "requires": [
+        "validate_flows"
+      ],
+      "output": "identity_blocks"
+    }
+  ],
+  "forbidden": [
+    "source_mutation",
+    "llm_authority",
+    "direct_main_push",
+    "secret_in_seed"
+  ]
+}

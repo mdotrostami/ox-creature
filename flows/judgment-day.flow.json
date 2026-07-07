@@ -1,0 +1,113 @@
+{
+  "flow_id": "ox_creature.judgment_day",
+  "version": "0.1.0",
+  "purpose": "Externally prove through GitHub Actions whether a mutation deserves to survive and wait for creator judgment.",
+  "inputs": [
+    "proposal_object",
+    "patch_artifact",
+    "mutation_branch",
+    "ci_environment"
+  ],
+  "nodes": [
+    {
+      "id": "preflight",
+      "kind": "validator",
+      "output": "preflight_report"
+    },
+    {
+      "id": "seed",
+      "kind": "ci_check",
+      "requires": [
+        "preflight"
+      ],
+      "output": "seed_result"
+    },
+    {
+      "id": "flows",
+      "kind": "ci_check",
+      "requires": [
+        "preflight"
+      ],
+      "output": "flow_result"
+    },
+    {
+      "id": "format",
+      "kind": "ci_check",
+      "requires": [
+        "preflight"
+      ],
+      "output": "format_result"
+    },
+    {
+      "id": "build",
+      "kind": "ci_check",
+      "requires": [
+        "format"
+      ],
+      "output": "build_result"
+    },
+    {
+      "id": "test",
+      "kind": "ci_check",
+      "requires": [
+        "build"
+      ],
+      "output": "test_result"
+    },
+    {
+      "id": "secrets",
+      "kind": "ci_check",
+      "requires": [
+        "preflight"
+      ],
+      "output": "secret_result"
+    },
+    {
+      "id": "blocks",
+      "kind": "ci_check",
+      "requires": [
+        "build"
+      ],
+      "output": "block_result"
+    },
+    {
+      "id": "report",
+      "kind": "judgment_aggregator",
+      "requires": [
+        "seed",
+        "flows",
+        "test",
+        "secrets",
+        "blocks"
+      ],
+      "output": "judgment_report"
+    },
+    {
+      "id": "creator_gate",
+      "kind": "github_environment_gate",
+      "requires": [
+        "report"
+      ],
+      "output": "creator_verdict",
+      "human_gate": true
+    }
+  ],
+  "pass_requires": [
+    "seed",
+    "flows",
+    "format",
+    "build",
+    "test",
+    "secrets",
+    "blocks"
+  ],
+  "forbidden": [
+    "local_self_grading_as_judgment_day",
+    "report_without_checks",
+    "launch_without_creator_gate",
+    "direct_main_push"
+  ],
+  "human_gates": [
+    "creator_gate"
+  ]
+}

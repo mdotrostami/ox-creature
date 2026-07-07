@@ -1,0 +1,127 @@
+{
+  "flow_id": "ox_creature.mutation",
+  "version": "0.1.0",
+  "purpose": "Convert one bounded user story into one governed branch mutation.",
+  "inputs": [
+    "user_story",
+    "source_snapshot",
+    "budget",
+    "git_state"
+  ],
+  "nodes": [
+    {
+      "id": "intake",
+      "kind": "agent_intake",
+      "output": "intent_candidate"
+    },
+    {
+      "id": "scope_check",
+      "kind": "validator",
+      "requires": [
+        "intake"
+      ],
+      "output": "scope_report"
+    },
+    {
+      "id": "context_pack",
+      "kind": "deterministic_query",
+      "requires": [
+        "scope_check"
+      ],
+      "output": "grounded_context"
+    },
+    {
+      "id": "plan",
+      "kind": "planner",
+      "requires": [
+        "context_pack"
+      ],
+      "output": "plan_object"
+    },
+    {
+      "id": "human_approve_plan",
+      "kind": "human_gate",
+      "requires": [
+        "plan"
+      ],
+      "output": "plan_approval",
+      "human_gate": true
+    },
+    {
+      "id": "proposal",
+      "kind": "proposal_builder",
+      "requires": [
+        "human_approve_plan"
+      ],
+      "output": "proposal_object"
+    },
+    {
+      "id": "canon",
+      "kind": "law_gate",
+      "requires": [
+        "proposal"
+      ],
+      "output": "canon_verdict"
+    },
+    {
+      "id": "patch",
+      "kind": "patch_builder",
+      "requires": [
+        "canon"
+      ],
+      "output": "patch_artifact"
+    },
+    {
+      "id": "branch",
+      "kind": "git_branch",
+      "requires": [
+        "patch"
+      ],
+      "output": "mutation_branch"
+    },
+    {
+      "id": "apply",
+      "kind": "branch_apply",
+      "requires": [
+        "branch"
+      ],
+      "output": "apply_report"
+    },
+    {
+      "id": "judgment",
+      "kind": "github_actions_gate",
+      "requires": [
+        "apply"
+      ],
+      "output": "github_judgment_report"
+    },
+    {
+      "id": "human_verdict",
+      "kind": "human_gate",
+      "requires": [
+        "judgment"
+      ],
+      "output": "human_verdict",
+      "human_gate": true
+    },
+    {
+      "id": "experience",
+      "kind": "memory_record",
+      "requires": [
+        "human_verdict"
+      ],
+      "output": "experience_entry"
+    }
+  ],
+  "human_gates": [
+    "human_approve_plan",
+    "human_verdict"
+  ],
+  "forbidden": [
+    "natural_language_to_code_shortcut",
+    "direct_main_push",
+    "unbounded_cost",
+    "hidden_failure",
+    "llm_output_as_truth"
+  ]
+}

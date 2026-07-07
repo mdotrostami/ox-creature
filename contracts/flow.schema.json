@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ox-creature Flow",
+  "type": "object",
+  "required": ["flow_id", "version", "purpose", "nodes", "forbidden"],
+  "properties": {
+    "flow_id": { "type": "string" },
+    "version": { "type": "string" },
+    "purpose": { "type": "string" },
+    "inputs": { "type": "array", "items": { "type": "string" } },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "output"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "requires": { "type": "array", "items": { "type": "string" } },
+          "output": { "type": "string" },
+          "human_gate": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "pass_requires": { "type": "array", "items": { "type": "string" } },
+    "human_gates": { "type": "array", "items": { "type": "string" } },
+    "forbidden": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

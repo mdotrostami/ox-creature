@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ox-creature LLM Next Action Draft",
+  "type": "object",
+  "required": ["schema_version", "kind", "task_id", "action", "summary", "touched_files", "risks", "required_human_decision", "cost_note"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "0.1.0" },
+    "kind": { "type": "string", "const": "next_action_draft" },
+    "task_id": { "type": "string" },
+    "action": { "type": "string", "enum": ["ask_human", "propose_plan", "propose_patch", "review", "stop"] },
+    "summary": { "type": "string" },
+    "touched_files": { "type": "array", "items": { "type": "string" }, "maxItems": 3 },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "required_human_decision": { "type": "boolean" },
+    "cost_note": { "type": "string" }
+  },
+  "additionalProperties": false
+}

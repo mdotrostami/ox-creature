@@ -1,0 +1,6 @@
+/target/
+/.creature/tmp/
+/.creature/llm/
+.env
+.env.*
+!.env.example

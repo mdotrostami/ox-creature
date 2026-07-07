@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ox-creature Presentation Blocks",
+  "type": "object",
+  "required": ["route", "status", "blocks"],
+  "properties": {
+    "route": { "type": "string" },
+    "status": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "data"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "law_panel",
+              "runtime_status",
+              "flow_graph",
+              "mission_status",
+              "git_status",
+              "proposal_review",
+              "diff_preview",
+              "judgment_status",
+              "cost_report",
+              "experience_entry",
+              "approval_actions"
+            ]
+          },
+          "data": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

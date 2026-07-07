@@ -1,0 +1,32 @@
+ox-creature Current Tasks
+
+Rule: every implementation patch must update this file.
+Rule: each task should be small enough for a Qwen-like model.
+Rule: default max touched files per task is 3.
+Rule: every task needs visible validation.
+Rule: local preflight is not Judgment Day; real Judgment Day is GitHub Actions + creator-judgment environment.
+
+[DONE] 000 Seed pack simplification and audit
+[DONE] 001 Tiny Rust runtime with seed/flow/status/preflight checks
+[DONE] 002 GitHub Actions Judgment Day workflow
+[DONE] 003 Project rename to ox-creature + creator-judgment panel model
+[DONE] 004 GapGPT LLM config + GitHub model discovery gate
+
+[NEXT] 005 Git status command
+Goal: add `cargo run -- git-status --json`.
+Allowed files: src/main.rs, docs/006_IMPLEMENTATION_PLAN.md, current_tasks.txt.
+Validation: cargo fmt --all --check && cargo test && cargo run -- git-status --json.
+
+[TODO] 006 .creature workspace init command
+[TODO] 007 User story intake artifact
+[TODO] 008 Intent candidate JSON contract
+[TODO] 009 Plan object contract
+[TODO] 010 Proposal object contract
+[TODO] 011 Patch artifact contract
+[TODO] 012 Branch creation guard
+[TODO] 013 Rollback note requirement
+[TODO] 014 Judgment report parser
+[TODO] 015 EXPERIENCE.md writer
+[TODO] 016 Cockpit Tauri shell
+[TODO] 017 Cockpit block renderer
+[TODO] 018 First Meeting demo
