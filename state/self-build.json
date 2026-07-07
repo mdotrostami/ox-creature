@@ -1,5 +1,5 @@
 {
-  "cycle": 27,
+  "cycle": 28,
   "phase": "self-building",
   "status": "mutation-applied",
   "last_summary": "Create exactly one missing product cell.",
