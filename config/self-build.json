@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "loop_delay_seconds": 10,
+  "loop_delay_seconds": 0,
   "max_cycles": 200,
   "max_files_per_cycle": 3,
   "max_bytes_per_file": 50000,
@@ -19,4 +19,3 @@
   ],
   "judgment_ready_marker": "state/judgment-ready.json"
 }
-

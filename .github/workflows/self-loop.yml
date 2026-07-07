@@ -5,311 +5,127 @@ on:
     branches: [main]
   workflow_dispatch:
   repository_dispatch:
-    types: [creature.self_build.continue]
+    types: [self-build-next]
 
 permissions:
   contents: write
   actions: write
 
 concurrency:
-  group: ox-creature-self-build-loop
+  group: ox-creature-self-build
   cancel-in-progress: false
-
-env:
-  CREATURE_LLM_BASE_URL: https://api.gapgpt.app/v1
 
 jobs:
   self-build:
-    name: Self-build one mutation cycle
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    env:
+      CREATURE_LLM_BASE_URL: https://api.gapgpt.app/v1
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
     steps:
-      - name: Checkout creature
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Configure Git actor
+        shell: bash
+        run: |
+          git config user.name "ox-creature"
+          git config user.email "actions@github.com"
 
-      - name: Pre-mutation checks
+      - name: Preflight
+        shell: bash
         run: |
           cargo fmt --all --check
-          cargo check
           cargo test
           cargo run -- preflight-check
 
-      - name: Check whether creature already requests Judgment Day
-        id: ready_before
+      - name: Read self-build delay
         shell: bash
         run: |
-          if cargo run -- self-build-ready-check; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
+          delay="$(cargo run --quiet -- self-build-rate-seconds)"
+          echo "SELF_BUILD_DELAY_SECONDS=${delay}" >> "$GITHUB_ENV"
 
-      - name: Request Judgment Day and stop self-build
-        if: steps.ready_before.outputs.ready == 'true'
+      - name: Emit self-build context
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
-            -d '{"event_type":"creature.judgment_day.requested"}'
-          echo "Creature requested Judgment Day. Self-build stops here."
-
-      - name: Stop before mutation when ready
-        if: steps.ready_before.outputs.ready == 'true'
-        run: exit 0
-
-      - name: Build self-build context
         run: |
           mkdir -p state
           cargo run -- self-build-context --json > state/self-build-context.json
 
-      - name: Discover LLM model
-        id: llm_model
+      - name: Ask LLM for one task-scoped mutation
         shell: bash
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
-          if [ -z "${LLM_API_KEY}" ]; then
-            echo "model=" >> "$GITHUB_OUTPUT"
-            echo "LLM_API_KEY is missing. Deterministic fallback will run."
+          rm -f state/llm-next-action.json state/llm-action-error.txt state/llm-response.json state/llm-request.json
+          if [ -z "${LLM_API_KEY:-}" ]; then
+            echo "LLM_API_KEY secret is missing" > state/llm-action-error.txt
             exit 0
           fi
           base="${CREATURE_LLM_BASE_URL%/}"
-          if ! curl -sS -f \
-            -H "Authorization: Bearer ${LLM_API_KEY}" \
-            "${base}/models" > state/llm-models.json; then
-            echo "model=" >> "$GITHUB_OUTPUT"
-            echo "Model discovery failed. Deterministic fallback will run."
+          if ! curl -fsS "$base/models" -H "Authorization: Bearer $LLM_API_KEY" > state/llm-models.json; then
+            echo "model discovery failed" > state/llm-action-error.txt
             exit 0
           fi
-          model=$(python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('state/llm-models.json'))
-          except Exception:
-              print('')
-              raise SystemExit(0)
-          items=data.get('data', []) if isinstance(data, dict) else []
-          ids=[]
-          for item in items:
-              if isinstance(item, dict) and isinstance(item.get('id'), str):
-                  ids.append(item['id'])
-              elif isinstance(item, str):
-                  ids.append(item)
-          preferred=[]
-          for model_id in ids:
-              low=model_id.lower()
-              score=0
-              if 'qwen' in low: score += 100
-              if 'coder' in low or 'code' in low: score += 80
-              if 'deepseek' in low: score += 40
-              if 'gpt' in low: score += 10
-              preferred.append((score, model_id))
-          preferred.sort(reverse=True)
-          print(preferred[0][1] if preferred else '')
-          PY
-          )
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
-          if [ -n "${model}" ]; then
-            echo "Selected model: ${model}"
-          else
-            echo "No model discovered. Deterministic fallback will run."
+          model="$(python3 -c 'import json; data=json.load(open("state/llm-models.json")); models=[m.get("id","") for m in data.get("data",[]) if isinstance(m,dict)]; preferred=[m for m in models if "qwen" in m.lower() or "coder" in m.lower()]; print((preferred or models or [""])[0])')"
+          if [ -z "$model" ]; then
+            echo "model discovery returned no model id" > state/llm-action-error.txt
+            exit 0
           fi
-
-      - name: Ask LLM for next self-build mutation
-        if: steps.llm_model.outputs.model != ''
-        shell: bash
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          MODEL_ID: ${{ steps.llm_model.outputs.model }}
-        run: |
-          base="${CREATURE_LLM_BASE_URL%/}"
-          python3 - <<'PY'
-          import json, os
-          context=open('state/self-build-context.json').read()
-          system = """You are the advisory intelligence inside ox-creature self-build. You are not authority. The Rust runtime validates everything. Return one JSON object only, with no markdown and no prose. Do exactly one tiny safe mutation toward the target product. Prefer creating the first missing product cell from target_product.recommended_next_actions. Do not include secrets. Do not edit .github workflows. Return full file contents using the plain content field for UTF-8 files; content_base64 is optional."""
-          payload={
-            "model": os.environ['MODEL_ID'],
-            "messages": [
-              {"role": "system", "content": system},
-              {"role": "user", "content": context}
-            ],
-            "temperature": 0.2,
-            "max_tokens": 4000
-          }
-          open('state/llm-request.json','w').write(json.dumps(payload))
-          PY
-          if ! curl -sS -f \
-            -H "Authorization: Bearer ${LLM_API_KEY}" \
-            -H "Content-Type: application/json" \
-            "${base}/chat/completions" \
-            -d @state/llm-request.json > state/llm-response.json; then
+          MODEL="$model" python3 -c 'import json, os; ctx=open("state/self-build-context.json").read(); req={"model":os.environ["MODEL"],"temperature":0.2,"messages":[{"role":"system","content":"You are ox-creature self-build. Return exactly one JSON object matching contracts/llm-next-action.schema.json. No markdown. Complete only the current task."},{"role":"user","content":ctx}]}; print(json.dumps(req))' > state/llm-request.json
+          if ! curl -fsS "$base/chat/completions" -H "Authorization: Bearer $LLM_API_KEY" -H "Content-Type: application/json" --data @state/llm-request.json > state/llm-response.json; then
             echo "chat completion failed" > state/llm-action-error.txt
             exit 0
           fi
-          if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json \
-            > state/llm-action-extract.log 2>&1; then
+          if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json > state/llm-action-extract.log 2>&1; then
             cp state/llm-action-extract.log state/llm-action-error.txt
-            python3 -c "import json,pathlib; p=pathlib.Path('state/llm-response.json'); data=json.loads(p.read_text()); content=data.get('choices',[{}])[0].get('message',{}).get('content',''); pathlib.Path('state/llm-response-content.txt').write_text(str(content)[:4000])" \
-              || echo "failed to extract LLM response content" >> state/llm-action-error.txt
+            exit 0
           fi
 
-      - name: Apply one self-build mutation
+      - name: Apply one governed self-build step
         shell: bash
         run: |
           if [ -f state/llm-next-action.json ]; then
             cargo run -- self-build-step --action state/llm-next-action.json --json > state/self-build-result.stdout.json
           else
-            if [ -f state/llm-action-error.txt ]; then
-              {
-                echo ""
-                echo "## LLM self-build action rejected before runtime apply"
-                echo ""
-                echo '```text'
-                sed -n '1,160p' state/llm-action-error.txt
-                echo '```'
-              } >> EXPERIENCE.md
-            fi
             cargo run -- self-build-step --json > state/self-build-result.stdout.json
           fi
-
-      - name: Format after mutation
-        run: cargo fmt --all
-
-      - name: Validate mutated creature
-        id: validate_mutation
-        shell: bash
-        run: |
-          set +e
-          cargo fmt --all --check > state/validation.log 2>&1
-          fmt_status=$?
-          cargo check >> state/validation.log 2>&1
-          check_status=$?
-          cargo test >> state/validation.log 2>&1
-          test_status=$?
-          cargo run -- preflight-check >> state/validation.log 2>&1
-          preflight_status=$?
-          if [ "$fmt_status" -ne 0 ] || [ "$check_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$preflight_status" -ne 0 ]; then
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            cat state/validation.log
-            exit 0
-          fi
-          echo "ok=true" >> "$GITHUB_OUTPUT"
-
-      - name: Convert failed mutation into experience
-        if: steps.validate_mutation.outputs.ok != 'true'
-        shell: bash
-        run: |
-          git diff > state/failed-mutation.diff || true
-          git checkout -- .
-          mkdir -p state
-          {
-            echo ""
-            echo "## Failed self-build mutation"
-            echo ""
-            echo "The previous self-build mutation failed validation and was rolled back."
-            echo "The creature must not repeat the same strategy."
-            echo ""
-            echo '```text'
-            sed -n '1,200p' state/validation.log 2>/dev/null || true
-            echo '```'
-          } >> EXPERIENCE.md
-          echo '{"status":"failed_mutation_recorded","should_continue":true,"delay_seconds":0,"commit_message":"self-build: record failed mutation experience"}' > state/self-build-result.json
+          cat state/self-build-result.stdout.json
 
       - name: Commit self-build result
-        id: commit_result
         shell: bash
         run: |
-          git config user.name "ox-creature"
-          git config user.email "ox-creature@users.noreply.github.com"
-          git add -A
+          python3 -c 'import json, os, subprocess; data=json.load(open("state/self-build-result.json")); files=list(dict.fromkeys(data.get("changed_files",[])+["state/self-build-result.json"])); files=[f for f in files if os.path.exists(f)]; subprocess.run(["git","add","--"]+files, check=True) if files else None'
           if git diff --cached --quiet; then
-            echo "committed=false" >> "$GITHUB_OUTPUT"
-            echo "No changes to commit."
+            echo "No self-build changes to commit."
+          else
+            message="$(python3 -c 'import json; print(json.load(open("state/self-build-result.json"))["commit_message"])')"
+            git commit -m "$message"
+            git push origin HEAD:main
+          fi
+
+      - name: Continue or request Judgment Day
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          should_continue="$(python3 -c 'import json; print(str(json.load(open("state/self-build-result.json")).get("should_continue", False)).lower())')"
+          ready="$(python3 -c 'import json; print(str(json.load(open("state/self-build-result.json")).get("ready_for_judgment", False)).lower())')"
+          delay="$(python3 -c 'import json; print(int(json.load(open("state/self-build-result.json")).get("delay_seconds", 0)))')"
+          if [ "$ready" = "true" ]; then
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/judgment-day.yml/dispatches" \
+              -d '{"ref":"main"}'
             exit 0
           fi
-          message=$(python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('state/self-build-result.json'))
-              print(data.get('commit_message') or 'self-build: continue creature evolution')
-          except Exception:
-              print('self-build: continue creature evolution')
-          PY
-          )
-          git commit -m "$message"
-          git push
-          echo "committed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Read continuation state
-        id: continuation
-        shell: bash
-        run: |
-          continue_flag=$(python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('state/self-build-result.json'))
-              print('true' if data.get('should_continue', True) else 'false')
-          except Exception:
-              print('true')
-          PY
-          )
-          ready_flag=$(python3 - <<'PY'
-          import json
-          try:
-              data=json.load(open('state/self-build-result.json'))
-              print('true' if data.get('ready_for_judgment', False) else 'false')
-          except Exception:
-              print('false')
-          PY
-          )
-          delay=$(cargo run -- self-build-rate-seconds)
-          echo "should_continue=${continue_flag}" >> "$GITHUB_OUTPUT"
-          echo "ready_for_judgment=${ready_flag}" >> "$GITHUB_OUTPUT"
-          echo "delay=${delay}" >> "$GITHUB_OUTPUT"
-
-      - name: Request Judgment Day when ready
-        if: steps.continuation.outputs.ready_for_judgment == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
-            -d '{"event_type":"creature.judgment_day.requested"}'
-
-      - name: Delay before next self-build cycle
-        if: steps.continuation.outputs.should_continue == 'true' && steps.continuation.outputs.ready_for_judgment != 'true'
-        shell: bash
-        run: |
-          delay="${{ steps.continuation.outputs.delay }}"
-          if [ -z "$delay" ]; then delay=0; fi
-          if [ "$delay" -gt 0 ]; then
-            echo "Sleeping ${delay}s before continuation dispatch."
-            sleep "$delay"
+          if [ "$should_continue" = "true" ]; then
+            if [ "$delay" -gt 0 ]; then
+              sleep "$delay"
+            fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/self-loop.yml/dispatches" \
+              -d '{"ref":"main"}'
           fi
-
-      - name: Dispatch next self-build cycle
-        if: steps.continuation.outputs.should_continue == 'true' && steps.continuation.outputs.ready_for_judgment != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl --fail -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/self-loop.yml/dispatches" \
-            -d '{"ref":"main"}'
-          echo "Dispatch next Self Build Loop run requested."

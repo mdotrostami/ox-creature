@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ox-creature LLM Next Self-Build Action",
+  "$id": "https://ontologyx.local/contracts/llm-next-action.schema.json",
+  "title": "ox-creature LLM Next Action",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision", "summary"],
@@ -9,9 +10,18 @@
       "type": "string",
       "enum": ["continue", "ready_for_judgment", "sleep", "stop"]
     },
+    "task_id": {
+      "type": "string",
+      "description": "Required for decision=continue. Must exactly match task_driver.current_task.id."
+    },
+    "cell_id": {
+      "type": "string",
+      "description": "Optional product/capability cell identifier touched by this task."
+    },
     "summary": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 500
     },
     "commit_message": {
       "type": "string",
@@ -20,10 +30,12 @@
     },
     "delay_seconds": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 86400
     },
     "experience": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 2000
     },
     "files": {
       "type": "array",
@@ -32,24 +44,54 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Must be one of current_task.allowed_files."
+          },
+          "content": {
+            "type": "string",
+            "description": "Full UTF-8 file content. Preferred for text files."
+          },
+          "content_base64": {
+            "type": "string",
+            "description": "Full file content encoded as base64. Use only when plain content is unsuitable."
+          }
+        },
         "oneOf": [
           { "required": ["content"] },
           { "required": ["content_base64"] }
         ],
-        "properties": {
-          "path": {
-            "type": "string",
-            "pattern": "^(apps|config|contracts|docs|flows|src|state)/"
-          },
-          "content": {
-            "type": "string"
-          },
-          "content_base64": {
-            "type": "string",
-            "contentEncoding": "base64"
-          }
+        "not": {
+          "required": ["content", "content_base64"]
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "decision": { "const": "continue" } },
+        "required": ["decision"]
+      },
+      "then": {
+        "required": ["task_id", "files"],
+        "properties": {
+          "files": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "decision": { "enum": ["sleep", "stop", "ready_for_judgment"] } },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {
+          "files": { "maxItems": 0 }
+        }
+      }
+    }
+  ]
 }

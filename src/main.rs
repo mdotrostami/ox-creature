@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::process::Command;
 
 const REQUIRED_LAWS: &[&str] = &[
     "Human Sovereignty",
@@ -31,6 +32,7 @@ fn main() {
         "llm-config-check" => llm_config_check(),
         "status" => status_json(),
         "preflight-check" => preflight_check(),
+        "git-status" => git_status_json(&args),
         "self-build-rate-seconds" => self_build::self_build_rate_seconds(),
         "self-build-context" => self_build::self_build_context(&args),
         "llm-action-from-response" => self_build::llm_action_from_response(&args),
@@ -59,6 +61,9 @@ fn help() -> Result<(), String> {
     );
     println!("  status --json                 emit Cockpit-readable presentation blocks");
     println!("  preflight-check               run local checks; not Judgment Day");
+    println!(
+        "  git-status --json             emit Git branch and dirty state for self-build tasks"
+    );
     println!("  self-build-rate-seconds       print loop delay in seconds; default is 0");
     println!("  self-build-context --json     emit bounded context for the LLM self-build step");
     println!(
@@ -133,6 +138,43 @@ fn contract_check() -> Result<(), String> {
     if checked == 0 {
         return Err("no JSON contract files found".to_string());
     }
+    Ok(())
+}
+
+fn git_status_json(args: &[String]) -> Result<(), String> {
+    if !args.iter().any(|arg| arg == "--json") {
+        return Err("git-status requires --json".to_string());
+    }
+    let output = Command::new("git")
+        .args(["status", "--short", "--branch"])
+        .output()
+        .map_err(|err| format!("failed to run git status: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let branch_line = lines.next().unwrap_or("## unknown");
+    let short_status: Vec<String> = lines.map(|line| line.to_string()).collect();
+    let branch = branch_line
+        .strip_prefix("## ")
+        .unwrap_or(branch_line)
+        .split("...")
+        .next()
+        .unwrap_or("unknown");
+    let value = serde_json::json!({
+        "branch": branch,
+        "clean": short_status.is_empty(),
+        "short_status": short_status,
+        "source": "git status --short --branch"
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?
+    );
     Ok(())
 }
 

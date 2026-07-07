@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use crate::generated_self_cells;
 
 const CONFIG_PATH: &str = "config/self-build.json";
 const STATE_PATH: &str = "state/self-build.json";
 const RESULT_PATH: &str = "state/self-build-result.json";
+const TASKS_PATH: &str = "current_tasks.txt";
 const DEFAULT_DELAY_SECONDS: u64 = 0;
 
 const SECRET_MARKERS: &[&str] = &["sk-", "ghp_", "github_pat_", "BEGIN PRIVATE KEY"];
@@ -41,6 +43,8 @@ pub struct LlmMutationAction {
     pub summary: String,
     pub commit_message: Option<String>,
     pub delay_seconds: Option<u64>,
+    pub task_id: Option<String>,
+    pub cell_id: Option<String>,
     #[serde(default)]
     pub files: Vec<MutationFile>,
     pub experience: Option<String>,
@@ -71,6 +75,23 @@ struct TargetCell {
     purpose: String,
     proof_path: String,
     status: String,
+    proof: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SelfBuildTask {
+    id: String,
+    title: String,
+    status: String,
+    goal: String,
+    allowed_files: Vec<String>,
+    validation: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FileBackup {
+    path: String,
+    previous: Option<String>,
 }
 
 impl Default for SelfBuildConfig {
@@ -122,6 +143,9 @@ pub fn config_check() -> Result<(), String> {
     if config.max_bytes_per_file == 0 {
         return Err("self-build max_bytes_per_file must be greater than zero".to_string());
     }
+    if current_task()?.is_none() && !all_tasks_done()? {
+        return Err("current_tasks.txt has no [NEXT] task but still has [TODO] tasks".to_string());
+    }
     println!("self-build-config-check: ok");
     Ok(())
 }
@@ -139,21 +163,16 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
     let config = load_config()?;
     let state = load_state()?;
     let target_cells = target_cells(&config);
-    let missing_cells: Vec<TargetCell> = target_cells
-        .iter()
-        .filter(|cell| cell.status != "present")
-        .cloned()
-        .collect();
+    let current_task = current_task()?;
+    let all_done = all_tasks_done()?;
+    let tasks = read_optional(TASKS_PATH);
     let seed = read_optional("SEED.md");
     let experience = read_optional("EXPERIENCE.md");
-    let tasks = read_optional("current_tasks.txt");
-
-    let recommended_next = recommended_next_actions(&missing_cells);
 
     let context = json!({
         "project": "ox-creature",
         "role": "self-build-context",
-        "meaning": "This is not Judgment Day. This is the self-build loop. The creature should make one tiny safe mutation toward the product, commit it, and continue.",
+        "meaning": "This is the autonomous self-build loop, not Judgment Day. The creature must complete exactly the current [NEXT] task, validate it, commit it, and continue until product readiness is true.",
         "laws": [
             "Human Sovereignty",
             "Reality Before Meaning",
@@ -164,22 +183,34 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "Failure Becomes Experience",
             "Small Steps or Stop"
         ],
+        "hard_boundaries": [
+            "The current task ledger is the driver. Do not repeat old product-cell examples.",
+            "Return exactly one JSON object and no markdown.",
+            "For decision=continue, task_id must equal current_task.id.",
+            "Only mutate files listed in current_task.allowed_files.",
+            "Never mutate current_tasks.txt, state/self-build.json, state/self-build-result.json, .github workflows, secrets, target/, or .git/.",
+            "The runtime advances current_tasks.txt after validation succeeds; the LLM must not edit the task ledger.",
+            "If the task cannot be safely done, use decision=sleep or stop with a precise reason; do not fake progress.",
+            "Do not declare ready_for_judgment while any task remains or any product proof is weak."
+        ],
         "config": config,
         "state": state,
         "generated_heartbeat": {
             "cycle": generated_self_cells::SELF_BUILD_CYCLE,
             "last_event": generated_self_cells::LAST_SELF_BUILD_EVENT
         },
+        "task_driver": {
+            "all_tasks_done": all_done,
+            "current_task": current_task,
+            "ledger_excerpt": truncate(&tasks, 6000)
+        },
         "target_product": {
             "definition": "A tiny Rust runtime + markdown constitution + GitHub Actions + LLM that self-builds until it can turn a user story into code and expose proof to Cockpit, then asks for Judgment Day.",
-            "cells": target_cells,
-            "missing_cells": missing_cells,
-            "recommended_next_actions": recommended_next
+            "cells": target_cells
         },
         "source_context": {
             "seed_excerpt": truncate(&seed, 5000),
-            "experience_excerpt": truncate(&experience, 5000),
-            "current_tasks_excerpt": truncate(&tasks, 3000)
+            "experience_excerpt": truncate(&experience, 5000)
         },
         "required_response_contract": {
             "type": "json-only",
@@ -187,23 +218,24 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "allowed_decisions": ["continue", "ready_for_judgment", "sleep", "stop"],
             "minimum_valid_continue": {
                 "decision": "continue",
-                "summary": "Create exactly one missing product cell.",
-                "commit_message": "self-build: add user story contract",
+                "task_id": "COPY_CURRENT_TASK_ID_EXACTLY",
+                "summary": "Complete the current [NEXT] task with the smallest valid source mutation.",
+                "commit_message": "self-build: complete task TASK_ID",
                 "files": [
                     {
-                        "path": "contracts/user-story.schema.json",
+                        "path": "ONE_ALLOWED_FILE_FROM_CURRENT_TASK",
                         "content": "FULL FILE CONTENT AS PLAIN UTF-8 TEXT"
                     }
                 ]
             },
             "rules": [
-                "Choose exactly one small missing target cell.",
-                "Modify at most max_files_per_cycle files.",
-                "Prefer the plain content field for UTF-8 text files; content_base64 is also accepted.",
+                "Use the current_task object, not target_product examples, to choose work.",
                 "Return full file contents, not a diff.",
-                "Never include secrets.",
-                "Never mutate .github workflows unless a human patch explicitly changes them.",
-                "Do not claim ready_for_judgment until user story intake, materialization, and cockpit proof cells exist."
+                "Prefer the plain content field for UTF-8 files.",
+                "Keep changes small and task-scoped.",
+                "No secret markers.",
+                "No placeholder-only files unless the task explicitly asks for a placeholder.",
+                "No no-op rewrites. The changed file must materially satisfy the task goal."
             ]
         }
     });
@@ -229,6 +261,8 @@ pub fn llm_action_from_response(args: &[String]) -> Result<(), String> {
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
         .ok_or_else(|| "LLM response missing choices[0].message.content".to_string())?;
+    fs::write("state/llm-response-content.txt", truncate(content, 8000))
+        .map_err(|err| format!("failed to write state/llm-response-content.txt: {err}"))?;
     let json_text = extract_first_json_object(content)?;
     let action: LlmMutationAction = serde_json::from_str(&json_text)
         .map_err(|err| format!("LLM action content is not valid action JSON: {err}"))?;
@@ -253,22 +287,27 @@ pub fn self_build_step(args: &[String]) -> Result<(), String> {
 
     let action_path = read_flag_value(args, "--action");
     let wants_json = args.iter().any(|arg| arg == "--json");
-    let action = match action_path {
+    let result = match action_path {
         Some(path) => match load_action(path) {
-            Ok(action) => Some(action),
-            Err(err) => {
-                record_experience(&format!(
-                    "LLM action was rejected; deterministic fallback used. Reason: {err}"
-                ))?;
-                None
-            }
+            Ok(action) => match apply_action(action, &config, &mut state) {
+                Ok(result) => result,
+                Err(err) => rejection_cycle(
+                    &config,
+                    &mut state,
+                    format!("LLM action rejected before commit: {err}"),
+                )?,
+            },
+            Err(err) => rejection_cycle(
+                &config,
+                &mut state,
+                format!("failed to load LLM action: {err}"),
+            )?,
         },
-        None => None,
-    };
-
-    let result = match action {
-        Some(action) => apply_action(action, &config, &mut state)?,
-        None => deterministic_fallback(&config, &mut state)?,
+        None => rejection_cycle(
+            &config,
+            &mut state,
+            "no valid LLM action was available for this self-build cycle".to_string(),
+        )?,
     };
 
     write_json(RESULT_PATH, &result)?;
@@ -292,23 +331,30 @@ pub fn self_build_ready_check() -> Result<(), String> {
             config.judgment_ready_marker
         ));
     }
-    let required = [
-        "contracts/user-story.schema.json",
-        "contracts/materialized-patch.schema.json",
-        "apps/cockpit/README.md",
-        "state/judgment-ready.json",
-    ];
-    let mut missing = Vec::new();
-    for path in required {
-        if !Path::new(path).is_file() {
-            missing.push(path);
-        }
+    if !all_tasks_done()? {
+        return Err(
+            "not ready for Judgment Day: current_tasks.txt still has NEXT/TODO work".to_string(),
+        );
     }
-    if !missing.is_empty() {
+    let invalid_cells = invalid_product_cells(&config, true)?;
+    if !invalid_cells.is_empty() {
         return Err(format!(
-            "not ready for Judgment Day: missing product cells: {}",
-            missing.join(", ")
+            "not ready for Judgment Day: invalid cells: {}",
+            invalid_cells.join(", ")
         ));
+    }
+    let marker = read_optional(&config.judgment_ready_marker);
+    for required in [
+        "user_story_to_code_proof",
+        "cockpit_proof",
+        "validation_proof",
+        "creator_judgment_requested",
+    ] {
+        if !marker.contains(required) {
+            return Err(format!(
+                "not ready for Judgment Day: marker missing proof field {required}"
+            ));
+        }
     }
     println!("self-build-ready-check: ready");
     Ok(())
@@ -318,9 +364,9 @@ pub fn status_block_json() -> Result<String, String> {
     let state = load_state()?;
     let config = load_config()?;
     let target_cells = target_cells(&config);
-    let missing_count = target_cells
+    let invalid_count = target_cells
         .iter()
-        .filter(|cell| cell.status != "present")
+        .filter(|cell| cell.status != "valid")
         .count();
     let status = json!({
         "project": "ox-creature",
@@ -351,7 +397,8 @@ pub fn status_block_json() -> Result<String, String> {
                     "status": state.status,
                     "ready_for_judgment": state.ready_for_judgment,
                     "loop_delay_seconds": config.loop_delay_seconds,
-                    "missing_product_cells": missing_count,
+                    "invalid_product_cells": invalid_count,
+                    "current_task": current_task()?,
                     "heartbeat_cycle": generated_self_cells::SELF_BUILD_CYCLE,
                     "heartbeat_event": generated_self_cells::LAST_SELF_BUILD_EVENT
                 }
@@ -360,8 +407,8 @@ pub fn status_block_json() -> Result<String, String> {
                 "type": "runtime_status",
                 "data": {
                     "runtime": "tiny-rust",
-                    "self_build": "github-actions-mutating-loop",
-                    "judgment_day": "only-when-creature-declares-ready",
+                    "self_build": "task-driven-github-actions-mutating-loop",
+                    "judgment_day": "only-when-creature-declares-ready-after-proof",
                     "authority": "human",
                     "llm_authority": false,
                     "llm_model_selection": "runtime_discovery"
@@ -380,15 +427,35 @@ fn apply_action(
     validate_action_shape(&action)?;
     let decision = action.decision.as_str();
     let next_cycle = state.cycle + 1;
+    let current = current_task()?;
 
     if decision == "ready_for_judgment" {
+        if current.is_some() {
+            return Err(
+                "ready_for_judgment is forbidden while current_tasks.txt has a [NEXT] task"
+                    .to_string(),
+            );
+        }
+        if !all_tasks_done()? {
+            return Err("ready_for_judgment is forbidden while TODO tasks remain".to_string());
+        }
+        let invalid_cells = invalid_product_cells(config, false)?;
+        if !invalid_cells.is_empty() {
+            return Err(format!(
+                "ready_for_judgment rejected; invalid product cells: {}",
+                invalid_cells.join(", ")
+            ));
+        }
         fs::create_dir_all("state").map_err(|err| format!("failed to create state/: {err}"))?;
         let summary = action.summary.clone();
         let marker = json!({
             "declared_by": "ox-creature-self-build-loop",
             "cycle": next_cycle,
             "summary": summary,
-            "meaning": "The creature declares it is ready to request Judgment Day. Runtime will still verify required product cells."
+            "user_story_to_code_proof": "current_tasks complete and user-story/code materialization path exists",
+            "cockpit_proof": "cockpit surface has state, flow, diff, risk, proof, and judgment blocks",
+            "validation_proof": "self-build-ready-check validates this marker before Judgment Day",
+            "creator_judgment_requested": true
         });
         write_json(&config.judgment_ready_marker, &marker)?;
         state.cycle = next_cycle;
@@ -412,23 +479,14 @@ fn apply_action(
     }
 
     if decision == "stop" {
-        state.cycle = next_cycle;
-        state.phase = "stopped".to_string();
-        state.status = "self-build-stopped".to_string();
-        state.last_summary = action.summary.clone();
-        write_json(STATE_PATH, state)?;
-        return Ok(SelfBuildResult {
-            status: "stopped".to_string(),
-            cycle: state.cycle,
-            summary: action.summary,
-            commit_message: action
-                .commit_message
-                .unwrap_or_else(|| "self-build: stop by creature decision".to_string()),
-            should_continue: false,
-            ready_for_judgment: false,
-            changed_files: vec![STATE_PATH.to_string()],
-            delay_seconds: action.delay_seconds.unwrap_or(config.loop_delay_seconds),
-        });
+        return rejection_cycle(
+            config,
+            state,
+            format!(
+                "LLM requested stop instead of completing the task: {}",
+                action.summary
+            ),
+        );
     }
 
     if decision == "sleep" {
@@ -443,7 +501,7 @@ fn apply_action(
             summary: action.summary,
             commit_message: action
                 .commit_message
-                .unwrap_or_else(|| "self-build: sleep".to_string()),
+                .unwrap_or_else(|| format!("self-build: sleep cycle {}", state.cycle)),
             should_continue: true,
             ready_for_judgment: false,
             changed_files: vec![STATE_PATH.to_string()],
@@ -455,18 +513,13 @@ fn apply_action(
         return Err(format!("unsupported self-build decision: {decision}"));
     }
 
-    if action.files.is_empty() {
-        return deterministic_fallback(config, state);
-    }
-    if action.files.len() > config.max_files_per_cycle {
-        return Err(format!(
-            "mutation touches too many files: {} > {}",
-            action.files.len(),
-            config.max_files_per_cycle
-        ));
-    }
+    let task = current.ok_or_else(|| {
+        "decision=continue is forbidden because current_tasks.txt has no [NEXT] task".to_string()
+    })?;
+    validate_task_action(&action, &task, config)?;
 
-    let mut changed = Vec::new();
+    let mut backups = Vec::new();
+    let mut material_changes = Vec::new();
     for file in &action.files {
         let path = validate_mutation_path(&file.path, config)?;
         let text = mutation_file_text(file)?;
@@ -479,35 +532,119 @@ fn apply_action(
             ));
         }
         scan_for_secret_markers(&file.path, &text)?;
+        let previous = fs::read_to_string(&path).ok();
+        if previous.as_deref() == Some(text.as_str()) {
+            continue;
+        }
+        backups.push(FileBackup {
+            path: file.path.clone(),
+            previous,
+        });
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
         fs::write(&path, text)
             .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-        changed.push(file.path.clone());
+        material_changes.push(file.path.clone());
     }
 
+    if material_changes.is_empty() {
+        rollback_files(&backups)?;
+        return rejection_cycle(
+            config,
+            state,
+            format!(
+                "task {} rejected: action produced no material file changes",
+                task.id
+            ),
+        );
+    }
+
+    if let Err(err) = run_task_validation(&task) {
+        rollback_files(&backups)?;
+        return rejection_cycle(
+            config,
+            state,
+            format!("task {} validation failed after rollback: {err}", task.id),
+        );
+    }
+
+    advance_task_ledger(&task.id)?;
     state.cycle = next_cycle;
     state.phase = "self-building".to_string();
-    state.status = "mutation-applied".to_string();
-    state.last_summary = action.summary.clone();
+    state.status = "task-completed".to_string();
+    state.last_summary = format!("Completed task {}: {}", task.id, task.title);
     state.ready_for_judgment = false;
     write_json(STATE_PATH, state)?;
+
+    let mut changed = material_changes;
+    changed.push(TASKS_PATH.to_string());
     changed.push(STATE_PATH.to_string());
 
     Ok(SelfBuildResult {
-        status: "mutated".to_string(),
+        status: "task-completed".to_string(),
         cycle: state.cycle,
-        summary: action.summary,
+        summary: state.last_summary.clone(),
         commit_message: action
             .commit_message
-            .unwrap_or_else(|| format!("self-build: cycle {}", state.cycle)),
+            .unwrap_or_else(|| format!("self-build: complete task {}", task.id)),
         should_continue: true,
         ready_for_judgment: false,
         changed_files: changed,
         delay_seconds: action.delay_seconds.unwrap_or(config.loop_delay_seconds),
     })
+}
+
+fn validate_task_action(
+    action: &LlmMutationAction,
+    task: &SelfBuildTask,
+    config: &SelfBuildConfig,
+) -> Result<(), String> {
+    let task_id = action
+        .task_id
+        .as_deref()
+        .ok_or_else(|| "decision=continue requires task_id".to_string())?;
+    if task_id != task.id {
+        return Err(format!(
+            "action task_id mismatch: expected {}, got {}",
+            task.id, task_id
+        ));
+    }
+    if action.files.is_empty() {
+        return Err("decision=continue requires at least one file".to_string());
+    }
+    if action.files.len() > config.max_files_per_cycle {
+        return Err(format!(
+            "mutation touches too many files: {} > {}",
+            action.files.len(),
+            config.max_files_per_cycle
+        ));
+    }
+    for file in &action.files {
+        if !task
+            .allowed_files
+            .iter()
+            .any(|allowed| allowed == &file.path)
+        {
+            return Err(format!(
+                "{} is not allowed for task {}; allowed files: {}",
+                file.path,
+                task.id,
+                task.allowed_files.join(", ")
+            ));
+        }
+        if file.path == TASKS_PATH
+            || file.path.starts_with("state/")
+            || file.path.starts_with(".github/")
+        {
+            return Err(format!(
+                "LLM may not mutate ledger/state/workflows directly: {}",
+                file.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn mutation_file_text(file: &MutationFile) -> Result<String, String> {
@@ -527,52 +664,139 @@ fn mutation_file_text(file: &MutationFile) -> Result<String, String> {
     ))
 }
 
-fn deterministic_fallback(
+fn rejection_cycle(
     config: &SelfBuildConfig,
     state: &mut SelfBuildState,
+    reason: String,
 ) -> Result<SelfBuildResult, String> {
     let next_cycle = state.cycle + 1;
-    fs::create_dir_all("state/self-build-cycles")
-        .map_err(|err| format!("failed to create cycle directory: {err}"))?;
-    let cycle_path = format!("state/self-build-cycles/cycle-{next_cycle:06}.md");
-    let summary = format!(
-        "Self-build cycle {next_cycle}: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat."
-    );
+    fs::create_dir_all("state/self-build-rejections")
+        .map_err(|err| format!("failed to create rejection directory: {err}"))?;
+    let rejection_path = format!("state/self-build-rejections/cycle-{next_cycle:06}.md");
     fs::write(
-        &cycle_path,
-        format!(
-            "# Self-build cycle {next_cycle}\n\n{summary}\n\nThis is a fallback mutation. The next loop should try to use LLM output again.\n"
-        ),
+        &rejection_path,
+        format!("# Self-build rejection {next_cycle}\n\n{reason}\n"),
     )
-    .map_err(|err| format!("failed to write {cycle_path}: {err}"))?;
-
-    let generated = format!(
-        "// This file is intentionally mutated by the ox-creature self-build loop.\n// It is a tiny deterministic heartbeat proving that the creature can change itself,\n// commit the change, and continue through GitHub Actions.\n\npub const SELF_BUILD_CYCLE: u64 = {next_cycle};\npub const LAST_SELF_BUILD_EVENT: &str = \"deterministic-fallback-cycle-{next_cycle}\";\n"
-    );
-    fs::write("src/generated_self_cells.rs", generated)
-        .map_err(|err| format!("failed to write src/generated_self_cells.rs: {err}"))?;
+    .map_err(|err| format!("failed to write {rejection_path}: {err}"))?;
+    record_experience(&format!("Self-build cycle {next_cycle} rejected. {reason}"))?;
 
     state.cycle = next_cycle;
     state.phase = "self-building".to_string();
-    state.status = "deterministic-fallback".to_string();
-    state.last_summary = summary.clone();
+    state.status = "action-rejected".to_string();
+    state.last_summary = reason.clone();
     state.ready_for_judgment = false;
     write_json(STATE_PATH, state)?;
 
     Ok(SelfBuildResult {
-        status: "fallback-mutated".to_string(),
+        status: "action-rejected".to_string(),
         cycle: state.cycle,
-        summary,
-        commit_message: format!("self-build: fallback cycle {}", state.cycle),
+        summary: reason,
+        commit_message: format!("self-build: learn from rejected cycle {}", state.cycle),
         should_continue: state.cycle < config.max_cycles,
         ready_for_judgment: false,
         changed_files: vec![
-            cycle_path,
-            "src/generated_self_cells.rs".to_string(),
+            rejection_path,
+            "EXPERIENCE.md".to_string(),
             STATE_PATH.to_string(),
         ],
         delay_seconds: config.loop_delay_seconds,
     })
+}
+
+fn rollback_files(backups: &[FileBackup]) -> Result<(), String> {
+    for backup in backups.iter().rev() {
+        match &backup.previous {
+            Some(text) => fs::write(&backup.path, text)
+                .map_err(|err| format!("failed to restore {}: {err}", backup.path))?,
+            None => {
+                let path = Path::new(&backup.path);
+                if path.exists() {
+                    fs::remove_file(path)
+                        .map_err(|err| format!("failed to remove {}: {err}", backup.path))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_task_validation(task: &SelfBuildTask) -> Result<(), String> {
+    if task.validation.is_empty() {
+        return Err(format!("task {} has no validation commands", task.id));
+    }
+    for command in &task.validation {
+        run_allowed_validation_command(command)?;
+    }
+    Ok(())
+}
+
+fn run_allowed_validation_command(command: &str) -> Result<(), String> {
+    let command = command.trim().trim_end_matches('.').trim();
+    let (program, args): (&str, Vec<&str>) = match command {
+        "cargo fmt --all --check" => ("cargo", vec!["fmt", "--all", "--check"]),
+        "cargo check" => ("cargo", vec!["check"]),
+        "cargo test" => ("cargo", vec!["test"]),
+        "cargo run -- preflight-check" => ("cargo", vec!["run", "--", "preflight-check"]),
+        "cargo run -- git-status --json" => ("cargo", vec!["run", "--", "git-status", "--json"]),
+        "cargo run -- creature-init --json" => {
+            ("cargo", vec!["run", "--", "creature-init", "--json"])
+        }
+        "cargo run -- user-story-intake --demo --json" => (
+            "cargo",
+            vec!["run", "--", "user-story-intake", "--demo", "--json"],
+        ),
+        "cargo run -- intent-candidate --demo --json" => (
+            "cargo",
+            vec!["run", "--", "intent-candidate", "--demo", "--json"],
+        ),
+        "cargo run -- plan-object --demo --json" => (
+            "cargo",
+            vec!["run", "--", "plan-object", "--demo", "--json"],
+        ),
+        "cargo run -- proposal-object --demo --json" => (
+            "cargo",
+            vec!["run", "--", "proposal-object", "--demo", "--json"],
+        ),
+        "cargo run -- patch-artifact --demo --json" => (
+            "cargo",
+            vec!["run", "--", "patch-artifact", "--demo", "--json"],
+        ),
+        "cargo run -- branch-guard --demo --json" => (
+            "cargo",
+            vec!["run", "--", "branch-guard", "--demo", "--json"],
+        ),
+        "cargo run -- rollback-note --demo --json" => (
+            "cargo",
+            vec!["run", "--", "rollback-note", "--demo", "--json"],
+        ),
+        "cargo run -- judgment-report --demo --json" => (
+            "cargo",
+            vec!["run", "--", "judgment-report", "--demo", "--json"],
+        ),
+        "cargo run -- experience-write --demo --json" => (
+            "cargo",
+            vec!["run", "--", "experience-write", "--demo", "--json"],
+        ),
+        "cargo run -- cockpit-demo --json" => {
+            ("cargo", vec!["run", "--", "cockpit-demo", "--json"])
+        }
+        "cargo run -- first-meeting-demo --json" => {
+            ("cargo", vec!["run", "--", "first-meeting-demo", "--json"])
+        }
+        other => return Err(format!("validation command is not allowlisted: {other}")),
+    };
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to run validation command `{command}`: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "validation command failed `{command}`\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
 }
 
 fn validate_action_shape(action: &LlmMutationAction) -> Result<(), String> {
@@ -638,6 +862,11 @@ fn validate_mutation_path(path: &str, config: &SelfBuildConfig) -> Result<PathBu
     if path.starts_with(".github/") {
         return Err("self-build may not mutate .github workflows; use a human patch".to_string());
     }
+    if path == TASKS_PATH || path == STATE_PATH || path == RESULT_PATH {
+        return Err(format!(
+            "self-build action may not mutate runtime-owned file: {path}"
+        ));
+    }
     if !config
         .allowed_path_prefixes
         .iter()
@@ -648,92 +877,225 @@ fn validate_mutation_path(path: &str, config: &SelfBuildConfig) -> Result<PathBu
     Ok(PathBuf::from(path))
 }
 
-fn recommended_next_actions(missing_cells: &[TargetCell]) -> Vec<Value> {
-    missing_cells
+fn current_task() -> Result<Option<SelfBuildTask>, String> {
+    Ok(parse_tasks()?
+        .into_iter()
+        .find(|task| task.status == "NEXT"))
+}
+
+fn all_tasks_done() -> Result<bool, String> {
+    Ok(parse_tasks()?
         .iter()
-        .filter(|cell| cell.id != "judgment.readiness_marker")
-        .take(3)
-        .map(|cell| {
-            json!({
-                "cell_id": cell.id,
-                "proof_path": cell.proof_path,
-                "instruction": recommended_instruction(cell)
-            })
-        })
+        .all(|task| task.status == "DONE" || task.status == "SKIP"))
+}
+
+fn parse_tasks() -> Result<Vec<SelfBuildTask>, String> {
+    let text = read_optional(TASKS_PATH);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut tasks = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        let Some((status, rest)) = parse_task_header(line) else {
+            i += 1;
+            continue;
+        };
+        let mut parts = rest.splitn(2, ' ');
+        let id = parts.next().unwrap_or_default().trim().to_string();
+        let title = parts.next().unwrap_or_default().trim().to_string();
+        let mut goal = String::new();
+        let mut allowed_files = Vec::new();
+        let mut validation = Vec::new();
+        i += 1;
+        while i < lines.len() && parse_task_header(lines[i].trim()).is_none() {
+            let current = lines[i].trim();
+            if let Some(value) = current.strip_prefix("Goal:") {
+                goal = strip_markdown(value.trim());
+            } else if let Some(value) = current.strip_prefix("Allowed files:") {
+                allowed_files = split_csv_like(value);
+            } else if let Some(value) = current.strip_prefix("Validation:") {
+                validation = split_validation(value);
+            }
+            i += 1;
+        }
+        if !id.is_empty() {
+            tasks.push(SelfBuildTask {
+                id,
+                title,
+                status,
+                goal,
+                allowed_files,
+                validation,
+            });
+        }
+    }
+    Ok(tasks)
+}
+
+fn parse_task_header(line: &str) -> Option<(String, String)> {
+    for status in ["DONE", "NEXT", "TODO", "SKIP"] {
+        let prefix = format!("[{status}] ");
+        if let Some(rest) = line.strip_prefix(&prefix) {
+            return Some((status.to_string(), rest.to_string()));
+        }
+    }
+    None
+}
+
+fn split_csv_like(value: &str) -> Vec<String> {
+    value
+        .trim()
+        .trim_end_matches('.')
+        .split(',')
+        .map(strip_markdown)
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
         .collect()
 }
 
-fn recommended_instruction(cell: &TargetCell) -> &'static str {
-    match cell.id.as_str() {
-        "user_story.intake_contract" => {
-            "Create a JSON schema for user stories with title, actor, goal, reason, acceptance_criteria, constraints, and proof_expected fields."
+fn split_validation(value: &str) -> Vec<String> {
+    value
+        .trim()
+        .trim_end_matches('.')
+        .split("&&")
+        .map(strip_markdown)
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn strip_markdown(value: &str) -> String {
+    value.replace('`', "").trim().to_string()
+}
+
+fn advance_task_ledger(completed_task_id: &str) -> Result<(), String> {
+    let text = read_optional(TASKS_PATH);
+    let mut advanced_next = false;
+    let mut completed = false;
+    let mut output = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !completed && trimmed.starts_with(&format!("[NEXT] {completed_task_id} ")) {
+            output.push(line.replacen("[NEXT]", "[DONE]", 1));
+            completed = true;
+        } else if completed && !advanced_next && trimmed.starts_with("[TODO] ") {
+            output.push(line.replacen("[TODO]", "[NEXT]", 1));
+            advanced_next = true;
+        } else {
+            output.push(line.to_string());
         }
-        "materialization.patch_contract" => {
-            "Create a JSON schema for bounded materialized patches with files, hashes, validation commands, rollback notes, and proof fields."
-        }
-        "cockpit.surface" => {
-            "Create a minimal Cockpit README describing the presentation blocks for state, flow, diff, risk, proof, and Judgment Day readiness."
-        }
-        _ => "Create the smallest valid artifact proving this cell exists without claiming Judgment Day readiness.",
     }
+    if !completed {
+        return Err(format!(
+            "could not advance task ledger; NEXT task {completed_task_id} not found"
+        ));
+    }
+    fs::write(TASKS_PATH, format!("{}\n", output.join("\n")))
+        .map_err(|err| format!("failed to write {TASKS_PATH}: {err}"))
+}
+
+fn invalid_product_cells(
+    config: &SelfBuildConfig,
+    include_marker: bool,
+) -> Result<Vec<String>, String> {
+    let mut invalid = Vec::new();
+    for cell in target_cells(config) {
+        if !include_marker && cell.id == "judgment.readiness_marker" {
+            continue;
+        }
+        if cell.status != "valid" {
+            invalid.push(format!("{}={}", cell.id, cell.proof));
+        }
+    }
+    Ok(invalid)
 }
 
 fn target_cells(config: &SelfBuildConfig) -> Vec<TargetCell> {
     vec![
-        cell(
+        proof_cell(
             "runtime.self_build_engine",
-            "Runtime can produce context, accept LLM patch JSON, validate it, mutate files, and update state.",
+            "Runtime can produce task-driven context, accept LLM patch JSON, validate it, rollback bad changes, mutate files, advance tasks, and update state.",
             "src/self_build.rs",
+            &["current_task", "advance_task_ledger", "rollback_files", "run_task_validation"],
         ),
-        cell(
+        proof_cell(
             "runtime.self_build_rate",
             "Self-build loop delay is configurable in seconds and defaults to zero.",
             CONFIG_PATH,
+            &["loop_delay_seconds"],
         ),
-        cell(
+        proof_cell(
             "contract.llm_next_action",
-            "LLM output contract exists and constrains mutations to small validated patches.",
+            "LLM output contract exists and constrains mutations to small validated task-scoped patches.",
             "contracts/llm-next-action.schema.json",
+            &["task_id", "allowed", "files", "content"],
         ),
-        cell(
+        proof_cell(
             "github.self_build_loop",
             "GitHub Actions can run the self-build cycle, commit, push, and dispatch continuation.",
             ".github/workflows/self-loop.yml",
+            &["workflow_dispatch", "contents: write", "actions: write"],
         ),
-        cell(
+        proof_cell(
             "user_story.intake_contract",
             "A user story has a typed contract before it can become code.",
             "contracts/user-story.schema.json",
+            &["acceptance_criteria", "actor", "goal", "reason", "proof_expected"],
         ),
-        cell(
+        proof_cell(
             "materialization.patch_contract",
             "Code materialization is represented as a bounded patch artifact before execution.",
             "contracts/materialized-patch.schema.json",
+            &["files", "hashes", "validation_commands", "rollback", "proof"],
         ),
-        cell(
+        proof_cell(
             "cockpit.surface",
-            "Cockpit has a visible surface that can show creature state, flow, diffs, risks, and Judgment proof.",
+            "Cockpit has a visible surface that can show creature state, flow, diffs, risks, proof, and Judgment readiness.",
             "apps/cockpit/README.md",
+            &["state", "flow", "diff", "risk", "proof", "Judgment"],
         ),
-        cell(
+        proof_cell(
             "judgment.readiness_marker",
-            "The creature can stop the self-build loop and request Judgment Day only after product cells exist.",
+            "The creature can stop the self-build loop and request Judgment Day only after product proof exists.",
             &config.judgment_ready_marker,
+            &[
+                "user_story_to_code_proof",
+                "cockpit_proof",
+                "validation_proof",
+                "creator_judgment_requested",
+            ],
         ),
     ]
 }
 
-fn cell(id: &str, purpose: &str, proof_path: &str) -> TargetCell {
-    let status = if Path::new(proof_path).is_file() {
-        "present"
+fn proof_cell(id: &str, purpose: &str, proof_path: &str, required_markers: &[&str]) -> TargetCell {
+    let path = Path::new(proof_path);
+    let proof = if !path.is_file() {
+        "missing".to_string()
     } else {
-        "missing"
+        let text = read_optional(proof_path);
+        let missing: Vec<&str> = required_markers
+            .iter()
+            .copied()
+            .filter(|marker| !text.contains(marker))
+            .collect();
+        if missing.is_empty() {
+            "content markers valid".to_string()
+        } else {
+            format!("weak; missing markers: {}", missing.join(", "))
+        }
+    };
+    let status = if proof == "content markers valid" {
+        "valid"
+    } else {
+        "invalid"
     };
     TargetCell {
         id: id.to_string(),
         purpose: purpose.to_string(),
         proof_path: proof_path.to_string(),
         status: status.to_string(),
+        proof,
     }
 }
 
@@ -799,7 +1161,11 @@ fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
         text.to_string()
     } else {
-        format!("{}\n...[truncated]", &text[..max])
+        let mut end = max;
+        while !text.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}\n...[truncated]", &text[..end])
     }
 }
 

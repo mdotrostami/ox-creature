@@ -4,29 +4,77 @@ Rule: every implementation patch must update this file.
 Rule: each task should be small enough for a Qwen-like model.
 Rule: default max touched files per task is 3.
 Rule: every task needs visible validation.
-Rule: local preflight is not Judgment Day; real Judgment Day is GitHub Actions + creator-judgment environment.
+Rule: Self-build, not humans, advances this ledger after a NEXT task validates.
+Rule: local preflight is not Judgment Day; real Judgment Day is declared by the creature only after product proof exists.
 
 [DONE] 000 Seed pack simplification and audit
 [DONE] 001 Tiny Rust runtime with seed/flow/status/preflight checks
 [DONE] 002 GitHub Actions Judgment Day workflow
 [DONE] 003 Project rename to ox-creature + creator-judgment panel model
 [DONE] 004 GapGPT LLM config + GitHub model discovery gate
+[DONE] 005 Git status command
 
-[NEXT] 005 Git status command
-Goal: add `cargo run -- git-status --json`.
-Allowed files: src/main.rs, docs/006_IMPLEMENTATION_PLAN.md, current_tasks.txt.
-Validation: cargo fmt --all --check && cargo test && cargo run -- git-status --json.
+[NEXT] 006 .creature workspace init command
+Goal: add `cargo run -- creature-init --json` that creates or validates a local `.creature/` workspace and emits JSON with workspace path, created/validated status, and authority note.
+Allowed files: src/main.rs.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- creature-init --json.
 
-[TODO] 006 .creature workspace init command
 [TODO] 007 User story intake artifact
+Goal: add `cargo run -- user-story-intake --demo --json` that emits a demo user story artifact matching `contracts/user-story.schema.json`.
+Allowed files: src/main.rs, contracts/user-story.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- user-story-intake --demo --json.
+
 [TODO] 008 Intent candidate JSON contract
+Goal: add `cargo run -- intent-candidate --demo --json` and a contract for converting a user story into an explicit intent candidate.
+Allowed files: src/main.rs, contracts/intent-candidate.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- intent-candidate --demo --json.
+
 [TODO] 009 Plan object contract
+Goal: add `cargo run -- plan-object --demo --json` and a contract for a non-executable plan derived from intent.
+Allowed files: src/main.rs, contracts/plan-object.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- plan-object --demo --json.
+
 [TODO] 010 Proposal object contract
+Goal: add `cargo run -- proposal-object --demo --json` and a contract for a governed proposal with gates and rollback.
+Allowed files: src/main.rs, contracts/proposal-object.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- proposal-object --demo --json.
+
 [TODO] 011 Patch artifact contract
+Goal: add `cargo run -- patch-artifact --demo --json` and a contract for a bounded materialized patch artifact.
+Allowed files: src/main.rs, contracts/patch-artifact.schema.json, contracts/materialized-patch.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- patch-artifact --demo --json.
+
 [TODO] 012 Branch creation guard
+Goal: add `cargo run -- branch-guard --demo --json` that explains and validates that self-build works on governed branches and never bypasses creator authority.
+Allowed files: src/main.rs, flows/mutation.flow.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- branch-guard --demo --json.
+
 [TODO] 013 Rollback note requirement
+Goal: add `cargo run -- rollback-note --demo --json` that emits rollback requirements for every proposed mutation.
+Allowed files: src/main.rs, contracts/rollback-note.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- rollback-note --demo --json.
+
 [TODO] 014 Judgment report parser
+Goal: add `cargo run -- judgment-report --demo --json` that parses a Judgment Day style report into status, proof, failures, and creator action fields.
+Allowed files: src/main.rs, contracts/judgment-report.schema.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- judgment-report --demo --json.
+
 [TODO] 015 EXPERIENCE.md writer
+Goal: add `cargo run -- experience-write --demo --json` that appends structured lessons without secrets and reports the written section.
+Allowed files: src/main.rs.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- experience-write --demo --json.
+
 [TODO] 016 Cockpit Tauri shell
+Goal: create a minimal Cockpit shell placeholder that documents how the future UI reads runtime presentation blocks without claiming production completeness.
+Allowed files: apps/cockpit/README.md, apps/cockpit/package.json, apps/cockpit/src/main.ts.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- cockpit-demo --json.
+
 [TODO] 017 Cockpit block renderer
+Goal: add `cargo run -- cockpit-demo --json` that emits presentation blocks for state, flow, diff, risk, proof, and Judgment readiness.
+Allowed files: src/main.rs, apps/cockpit/README.md.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- cockpit-demo --json.
+
 [TODO] 018 First Meeting demo
+Goal: add `cargo run -- first-meeting-demo --json` that proves the path user story → intent → plan → proposal → patch → cockpit proof exists and then permits the creature to request Judgment Day.
+Allowed files: src/main.rs, state/judgment-ready.json.
+Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- first-meeting-demo --json.
