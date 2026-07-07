@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MaterializedPatch",
+  "description": "A bounded patch artifact representing code materialization before execution.",
+  "type": "object",
+  "properties": {
+    "patch_id": {
+      "type": "string",
+      "description": "Unique identifier for the patch"
+    },
+    "source_branch": {
+      "type": "string",
+      "description": "Branch from which the patch was created"
+    },
+    "target_branch": {
+      "type": "string",
+      "description": "Branch to which the patch will be applied"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" },
+          "hash": { "type": "string" }
+        },
+        "required": ["path", "content", "hash"]
+      }
+    },
+    "validation_commands": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "rollback_notes": {
+      "type": "string",
+      "description": "Instructions for rolling back this patch if needed"
+    },
+    "proof": {
+      "type": "object",
+      "properties": {
+        "test_results": { "type": "boolean" },
+        "lint_passed": { "type": "boolean" },
+        "build_succeeded": { "type": "boolean" }
+      }
+    }
+  },
+  "required": [
+    "patch_id",
+    "source_branch",
+    "target_branch",
+    "files",
+    "validation_commands",
+    "rollback_notes",
+    "proof"
+  ]
+}

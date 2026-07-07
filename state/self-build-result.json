@@ -1,12 +1,12 @@
 {
   "status": "mutated",
-  "cycle": 20,
+  "cycle": 21,
   "summary": "Create exactly one missing product cell.",
-  "commit_message": "self-build: add user story contract",
+  "commit_message": "self-build: add materialized patch contract",
   "should_continue": true,
   "ready_for_judgment": false,
   "changed_files": [
-    "contracts/user-story.schema.json",
+    "contracts/materialized-patch.schema.json",
     "state/self-build.json"
   ],
   "delay_seconds": 10
