@@ -1,14 +1,14 @@
 {
   "status": "action-rejected",
-  "cycle": 46,
+  "cycle": 47,
   "summary": "no valid LLM action was available for this self-build cycle",
-  "commit_message": "self-build: learn from rejected cycle 46",
+  "commit_message": "self-build: learn from rejected cycle 47",
   "should_continue": true,
   "ready_for_judgment": false,
   "changed_files": [
     "EXPERIENCE.md",
     "state/self-build-memory.json",
-    "state/self-build-rejections/cycle-000046.md",
+    "state/self-build-rejections/cycle-000047.md",
     "state/self-build.json"
   ],
   "delay_seconds": 0
