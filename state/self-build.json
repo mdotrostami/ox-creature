@@ -1,7 +1,7 @@
 {
-  "cycle": 12,
+  "cycle": 13,
   "phase": "self-building",
   "status": "deterministic-fallback",
-  "last_summary": "Self-build cycle 12: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
+  "last_summary": "Self-build cycle 13: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
   "ready_for_judgment": false
 }
