@@ -14,12 +14,12 @@ Rule: local preflight is not Judgment Day; real Judgment Day is declared by the 
 [DONE] 004 GapGPT LLM config + GitHub model discovery gate
 [DONE] 005 Git status command
 
-[NEXT] 006 .creature workspace init command
+[DONE] 006 .creature workspace init command
 Goal: add `cargo run -- creature-init --json` that creates or validates a local `.creature/` workspace and emits JSON with workspace path, created/validated status, and authority note.
 Allowed files: src/main.rs.
 Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- creature-init --json.
 
-[TODO] 007 User story intake artifact
+[NEXT] 007 User story intake artifact
 Goal: add `cargo run -- user-story-intake --demo --json` that emits a demo user story artifact matching `contracts/user-story.schema.json`.
 Allowed files: src/main.rs, contracts/user-story.schema.json.
 Validation: cargo fmt --all --check && cargo test && cargo run -- preflight-check && cargo run -- user-story-intake --demo --json.
