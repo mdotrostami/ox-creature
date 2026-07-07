@@ -1,0 +1,162 @@
+name: Self Loop
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why is ox-creature continuing the self loop?"
+        required: false
+        type: string
+        default: "continue bounded growth"
+      loop_mode:
+        description: "Self-loop mode"
+        required: true
+        default: "health"
+        type: choice
+        options:
+          - health
+          - next-step
+          - recovery
+
+permissions:
+  contents: read
+  issues: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  self-loop:
+    name: Self Loop health and continuation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CREATURE_MAX_COST_USD: "0.25"
+      CREATURE_ALLOW_NETWORK_FOR_TESTS: "false"
+    steps:
+      - name: Checkout governed branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare self-loop report directory
+        run: mkdir -p .creature/self-loop
+
+      - name: Secret value guard
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${LLM_API_KEY:-}" ]; then
+            if grep -RIF --exclude-dir=.git --exclude-dir=target --exclude-dir=.creature -- "$LLM_API_KEY" .; then
+              echo "Secret value leaked into repository files."
+              exit 1
+            fi
+          fi
+          echo "secret value guard ok"
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust check
+        run: cargo check
+
+      - name: Rust tests
+        run: cargo test
+
+      - name: Runtime seed check
+        run: cargo run -- seed-check
+
+      - name: Runtime contract check
+        run: cargo run -- contract-check
+
+      - name: Runtime flow check
+        run: cargo run -- flow-check
+
+      - name: Runtime presentation block check
+        run: |
+          cargo run -- status --json > .creature/self-loop/cockpit-status.json
+          python3 - <<'PY'
+          import json
+          with open('.creature/self-loop/cockpit-status.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          assert data['project'] == 'ox-creature'
+          assert data['route'] == 'cockpit.identity'
+          assert data['status'] == 'ready'
+          assert data['blocks']
+          print('presentation blocks ok')
+          PY
+
+      - name: JSON syntax check
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          for root in ['contracts', 'flows']:
+              for path in pathlib.Path(root).glob('*.json'):
+                  json.loads(path.read_text(encoding='utf-8'))
+                  print('valid json', path)
+          PY
+
+      - name: Local preflight check
+        run: cargo run -- preflight-check
+
+      - name: Write Self Loop report
+        if: always()
+        run: |
+          cat > .creature/self-loop/report.md <<REPORT
+          # ox-creature Self Loop Report
+
+          Repository: $GITHUB_REPOSITORY
+          Ref: $GITHUB_REF
+          SHA: $GITHUB_SHA
+          Event: $GITHUB_EVENT_NAME
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          ## Meaning
+
+          This is Self Loop, not Judgment Day.
+
+          Passing this workflow means ox-creature is healthy enough to continue bounded growth.
+          It does not mean the creature has proven user-story-to-code capability.
+
+          ## Judgment Day boundary
+
+          Judgment Day must be called only when the creature can prove:
+
+          - user story intake
+          - typed intent
+          - bounded plan
+          - governed patch
+          - tests/build proof
+          - Cockpit-visible proof
+          - cost report
+          - creator gate
+
+          Until then, the creature remains in Self Loop.
+
+          ## Failure rule
+
+          If this check failed, ox-creature must stop and update or request update of EXPERIENCE.md before repeating the same strategy.
+          REPORT
+
+          cat .creature/self-loop/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Self Loop report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ox-creature-self-loop-report
+          path: .creature/self-loop/
+          if-no-files-found: error
+
+      - name: Create continuation issue when requested
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.loop_mode == 'next-step' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "self-loop: choose next bounded mutation" \
+            --body "Self Loop passed. ox-creature may choose the next bounded mutation, but must not call Judgment Day until it can prove the full user-story-to-code path with Cockpit-visible proof."

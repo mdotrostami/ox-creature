@@ -22,69 +22,42 @@ Local commands are not Judgment Day. They are only genesis/preflight checks.
 cargo run -- seed-check
 cargo run -- flow-check
 cargo run -- contract-check
-cargo run -- llm-config-check
 cargo run -- status --json
 cargo run -- preflight-check
 ```
 
-## Real Judgment Day
+## Self Loop vs Judgment Day
 
-Judgment Day is the GitHub Actions workflow in:
+`ox-creature` has two different GitHub-native rituals:
 
 ```text
-.github/workflows/judgment-day.yml
+.github/workflows/self-loop.yml       # ordinary life / repeated growth
+.github/workflows/judgment-day.yml    # rare final trial / creator meeting
 ```
 
-It runs on the first push to `main`, pull requests, mutation branches, and manual dispatch. It produces a GitHub Actions run summary and uploads a Judgment report artifact.
+**Self Loop** is the normal repeating workflow. It may run on push or manual dispatch. It checks the seed, contracts, flows, runtime status, and project hygiene. It may later open issues, propose the next small mutation, or prepare a branch. Passing Self Loop means the creature is still healthy enough to continue learning.
 
-After deterministic checks and LLM model discovery pass, the workflow reaches the `creator-judgment` environment. If that environment has required reviewers configured, GitHub pauses the job and asks the creator to approve/reject from the Actions UI.
+**Judgment Day** is not the normal loop. It is called only when the creature itself claims it is ready to meet the creator: it must prove that a user story can become safe, working, visible, explainable, affordable code, with Cockpit-readable proof. Judgment Day is manually dispatched by the creature or the creator, and waits at the `creator-judgment` environment gate.
 
 The intended creator experience is:
 
 ```text
 Actions tab
+→ Self Loop keeps repeating during growth
+→ creature eventually announces Judgment Day readiness
 → Judgment Day run
-→ PASS / FAIL summary
-→ report artifact
+→ PASS / FAIL summary and report artifact
 → Review deployments
 → Approve or reject
 ```
 
-The creator may approve quickly because the creature is only free inside governed branches. It cannot merge, release, spend secrets, or mutate protected state unless later project phases explicitly implement those actions behind approval gates.
-
-
-## LLM setup
-
-The non-secret runtime LLM configuration lives in:
-
-```text
-config/llm.runtime.json
-```
-
-It points to the OpenAI-compatible GapGPT base URL and enables model discovery. The runtime/GitHub workflow may choose the model by discovery policy.
-
-The real API key must **not** be committed. Put it in GitHub Actions secrets with this exact name:
-
-```text
-LLM_API_KEY
-```
-
-First push flow:
-
-```text
-create GitHub repo
-→ add LLM_API_KEY secret
-→ create creator-judgment environment with yourself as required reviewer
-→ push main
-→ Judgment Day runs automatically
-→ approve/reject from GitHub Actions UI
-```
+Until Judgment Day is explicitly called, green runs are only Self Loop health signals, not final proof.
 
 ## First proof target
 
-The first real milestone is not full autonomy.
+The first real milestone is not Judgment Day.
 
-The first milestone is this:
+The first milestone is the Self Loop staying alive while it prepares this path:
 
 ```text
 User story

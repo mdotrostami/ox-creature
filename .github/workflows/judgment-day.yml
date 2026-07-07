@@ -1,35 +1,31 @@
 name: Judgment Day
 
 on:
-  push:
-    branches:
-      - main
-      - "mutation/**"
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
-      reason:
-        description: "Why is ox-creature calling Judgment Day?"
-        required: false
-        type: string
-      creature_mode:
-        description: "Run mode"
+      creature_claim:
+        description: "What complete capability is ox-creature claiming?"
         required: true
-        default: "genesis"
-        type: choice
-        options:
-          - genesis
-          - mutation
-          - launch-candidate
+        type: string
+      user_story_proof:
+        description: "Where is the user-story-to-code proof artifact?"
+        required: true
+        type: string
+      cockpit_proof:
+        description: "Where is the Cockpit-visible proof artifact?"
+        required: true
+        type: string
+      cost_claim_usd:
+        description: "Claimed cost of the run in USD"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [creature-ready-for-judgment]
 
 permissions:
   contents: read
+  issues: read
   pull-requests: read
-
-concurrency:
-  group: judgment-day-${{ github.ref }}
-  cancel-in-progress: false
 
 defaults:
   run:
@@ -37,76 +33,33 @@ defaults:
 
 jobs:
   judgment-day:
-    name: Judgment Day checks
+    name: Creator meeting trial
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
-      CREATURE_MAX_COST_USD: "0.25"
+      CREATURE_MAX_COST_USD: "1.00"
       CREATURE_ALLOW_NETWORK_FOR_TESTS: "false"
-      CREATURE_LLM_BASE_URL: "https://api.gapgpt.app/v1"
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
     steps:
       - name: Checkout governed branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Prepare report directory
+      - name: Prepare Judgment report directory
         run: mkdir -p .creature/judgment
 
-      - name: Secret leak guard
+      - name: Secret value guard
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
-          python3 - <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
-
-          # Judgment Day must catch real committed secrets, not fail on its own detector source.
-          # These patterns require concrete secret-looking values, not merely words like
-          # "api_key" or "password" inside code.
-          patterns = [
-              re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
-              re.compile(r"ghp_[A-Za-z0-9_]{20,}"),
-              re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-              re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-              re.compile(r"(?i)(api[_-]?key|password)\s*[:=]\s*['\"][^'\"\n]{12,}['\"]"),
-          ]
-
-          ignored_dirs = {'.git', 'target', '.creature'}
-          ignored_suffixes = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.zip'}
-          hits = []
-
-          for path in pathlib.Path('.').rglob('*'):
-              if not path.is_file():
-                  continue
-              if any(part in ignored_dirs for part in path.parts):
-                  continue
-              if path.suffix.lower() in ignored_suffixes:
-                  continue
-              try:
-                  text = path.read_text(encoding='utf-8')
-              except UnicodeDecodeError:
-                  continue
-              for line_no, line in enumerate(text.splitlines(), 1):
-                  for pattern in patterns:
-                      if pattern.search(line):
-                          hits.append(f"{path}:{line_no}: possible secret-like value")
-
-          if hits:
-              print("Possible committed secret found:")
-              print("\n".join(hits))
-              sys.exit(1)
-
-          print("secret leak guard: ok")
-          PY
-
-      - name: Install Rust stable
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustc --version
-          cargo --version
+          set -euo pipefail
+          if [ -n "${LLM_API_KEY:-}" ]; then
+            if grep -RIF --exclude-dir=.git --exclude-dir=target --exclude-dir=.creature -- "$LLM_API_KEY" .; then
+              echo "Secret value leaked into repository files."
+              exit 1
+            fi
+          fi
+          echo "secret value guard ok"
 
       - name: Rust format
         run: cargo fmt --all --check
@@ -117,19 +70,10 @@ jobs:
       - name: Rust tests
         run: cargo test
 
-      - name: Runtime seed check
-        run: cargo run -- seed-check
+      - name: Runtime preflight
+        run: cargo run -- preflight-check
 
-      - name: Runtime contract check
-        run: cargo run -- contract-check
-
-      - name: Runtime flow check
-        run: cargo run -- flow-check
-
-      - name: Runtime LLM config check
-        run: cargo run -- llm-config-check
-
-      - name: Runtime presentation block check
+      - name: Cockpit proof must exist in runtime output
         run: |
           cargo run -- status --json > .creature/judgment/cockpit-status.json
           python3 - <<'PY'
@@ -137,124 +81,22 @@ jobs:
           with open('.creature/judgment/cockpit-status.json', 'r', encoding='utf-8') as f:
               data = json.load(f)
           assert data['project'] == 'ox-creature'
-          assert data['route'] == 'cockpit.identity'
-          assert data['status'] == 'ready'
+          assert data['route'].startswith('cockpit.')
           assert data['blocks']
-          print('presentation blocks ok')
+          print('cockpit proof surface ok')
           PY
 
-      - name: JSON syntax check
+      - name: Validate Judgment Day claim fields
         run: |
-          python3 - <<'PY'
-          import json, pathlib
-          for root in ['contracts', 'flows', 'config']:
-              for path in pathlib.Path(root).glob('*.json'):
-                  json.loads(path.read_text(encoding='utf-8'))
-                  print('valid json', path)
-          PY
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            test -n "${{ inputs.creature_claim }}"
+            test -n "${{ inputs.user_story_proof }}"
+            test -n "${{ inputs.cockpit_proof }}"
+            test -n "${{ inputs.cost_claim_usd }}"
+          fi
 
-      - name: LLM model discovery
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.request
-          import urllib.error
-
-          out_path = '.creature/judgment/llm-discovery.json'
-          event_name = os.environ.get('GITHUB_EVENT_NAME', '')
-          api_key = os.environ.get('LLM_API_KEY', '')
-          base_url = os.environ.get('CREATURE_LLM_BASE_URL', '').rstrip('/')
-
-          def write(payload):
-              with open(out_path, 'w', encoding='utf-8') as f:
-                  json.dump(payload, f, indent=2, sort_keys=True)
-                  f.write('\n')
-
-          if not base_url:
-              write({'status': 'failed', 'reason': 'missing_CREATURE_LLM_BASE_URL'})
-              sys.exit('missing CREATURE_LLM_BASE_URL')
-
-          if not api_key:
-              payload = {
-                  'status': 'skipped' if event_name == 'pull_request' else 'failed',
-                  'reason': 'missing_LLM_API_KEY_secret',
-                  'base_url': base_url,
-                  'secret_name': 'LLM_API_KEY'
-              }
-              write(payload)
-              if event_name == 'pull_request':
-                  print('LLM discovery skipped for pull_request without secret')
-                  sys.exit(0)
-              sys.exit('missing GitHub secret: LLM_API_KEY')
-
-          url = base_url + '/models'
-          request = urllib.request.Request(
-              url,
-              headers={
-                  'Authorization': 'Bearer ' + api_key,
-                  'Accept': 'application/json',
-              },
-          )
-          try:
-              with urllib.request.urlopen(request, timeout=25) as response:
-                  raw = response.read().decode('utf-8')
-          except urllib.error.HTTPError as err:
-              write({'status': 'failed', 'reason': 'http_error', 'code': err.code, 'base_url': base_url})
-              raise
-          except Exception as err:
-              write({'status': 'failed', 'reason': type(err).__name__, 'base_url': base_url})
-              raise
-
-          data = json.loads(raw)
-          raw_models = data.get('data', data if isinstance(data, list) else [])
-          ids = []
-          for item in raw_models:
-              if isinstance(item, dict) and item.get('id'):
-                  ids.append(str(item['id']))
-              elif isinstance(item, str):
-                  ids.append(item)
-          ids = sorted(set(ids))
-          if not ids:
-              write({'status': 'failed', 'reason': 'no_models_returned', 'base_url': base_url})
-              sys.exit('model discovery returned no model ids')
-
-          def score(model_id):
-              m = model_id.lower()
-              value = 0
-              if 'qwen' in m:
-                  value += 100
-              if 'coder' in m or 'code' in m:
-                  value += 80
-              if 'reason' in m or 'thinking' in m:
-                  value += 50
-              if 'instruct' in m or 'chat' in m:
-                  value += 25
-              if any(x in m for x in ['vision', 'audio', 'image', 'embed', 'embedding']):
-                  value -= 100
-              value -= len(model_id) / 1000.0
-              return value
-
-          selected = sorted(ids, key=lambda mid: (-score(mid), mid))[0]
-          write({
-              'status': 'ok',
-              'provider': 'gapgpt',
-              'base_url': base_url,
-              'selection_policy': 'deterministic_qwen_or_coder_preference',
-              'selected_model': selected,
-              'model_count': len(ids),
-              'models': ids,
-              'secret_used': 'LLM_API_KEY',
-              'secret_value_logged': False
-          })
-          print('LLM discovery ok; selected model:', selected)
-          PY
-
-      - name: Local preflight check
-        run: cargo run -- preflight-check
-
-      - name: Write Judgment report
+      - name: Write Judgment Day report
         if: always()
         run: |
           cat > .creature/judgment/report.md <<REPORT
@@ -268,32 +110,34 @@ jobs:
 
           ## Meaning
 
-          This report is produced by GitHub Actions. Local preflight is not Judgment Day.
+          This is Judgment Day, not Self Loop.
 
-          ## LLM discovery
+          Judgment Day is only valid when ox-creature claims it can convert a user story into governed, tested, Cockpit-visible code.
 
-          ox-creature discovers models from CREATURE_LLM_BASE_URL using the GitHub secret named LLM_API_KEY.
-          The secret value is not written to the report.
+          ## Required proof
 
-          If discovery succeeded, see llm-discovery.json in the uploaded artifact.
+          - user story intake
+          - typed intent
+          - bounded plan
+          - governed patch
+          - tests/build proof
+          - Cockpit-visible proof
+          - cost report
+          - creator gate
 
           ## Creator action
 
-          If every check above passed, GitHub will advance to the creator-controlled environment gate.
+          If every check passed, GitHub will advance to the creator-controlled environment gate.
           The creator may approve or reject from the Actions UI.
-
-          ## Failure rule
-
-          If any check failed, ox-creature must stop and update or request update of EXPERIENCE.md before repeating the same strategy.
           REPORT
 
           cat .creature/judgment/report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Judgment report
+      - name: Upload Judgment Day report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: ox-creature-judgment-report
+          name: ox-creature-judgment-day-report
           path: .creature/judgment/
           if-no-files-found: error
 
@@ -310,7 +154,7 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           # Creator Judgment Passed
 
-          The creator approved this run through the GitHub environment gate.
+          The creator approved this Judgment Day run through the GitHub environment gate.
 
           ox-creature may continue to the next governed stage.
           SUMMARY

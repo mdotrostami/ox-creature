@@ -67,7 +67,7 @@ Every branch must link to:
 
 Protected main must remain human-controlled.
 
-## Permanent Law 6 — Judgment Day
+## Permanent Law 6 — Self Loop Before Judgment Day
 
 A capability is not real until it survives Judgment Day.
 
