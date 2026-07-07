@@ -34,18 +34,20 @@ jobs:
           git config user.name "ox-creature"
           git config user.email "actions@github.com"
 
+      - name: Read self-build delay
+        shell: bash
+        run: |
+          delay="$(python3 -c 'import json, pathlib; p=pathlib.Path("config/self-build.json"); print(int(json.loads(p.read_text()).get("loop_delay_seconds", 0)) if p.exists() else 0)')"
+          echo "SELF_BUILD_DELAY_SECONDS=${delay}" >> "$GITHUB_ENV"
+
       - name: Preflight
         shell: bash
         run: |
           cargo fmt --all --check
           cargo test
           cargo run -- preflight-check
-
-      - name: Read self-build delay
-        shell: bash
-        run: |
-          delay="$(cargo run --quiet -- self-build-rate-seconds)"
-          echo "SELF_BUILD_DELAY_SECONDS=${delay}" >> "$GITHUB_ENV"
+          cargo run -- self-build-rate-seconds
+          cargo run -- self-build-context --json > state/self-build-preflight-context.json
 
       - name: Emit self-build context
         shell: bash
