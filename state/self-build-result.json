@@ -1,14 +1,13 @@
 {
-  "status": "fallback-mutated",
-  "cycle": 19,
-  "summary": "Self-build cycle 19: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
-  "commit_message": "self-build: fallback cycle 19",
+  "status": "mutated",
+  "cycle": 20,
+  "summary": "Create exactly one missing product cell.",
+  "commit_message": "self-build: add user story contract",
   "should_continue": true,
   "ready_for_judgment": false,
   "changed_files": [
-    "state/self-build-cycles/cycle-000019.md",
-    "src/generated_self_cells.rs",
+    "contracts/user-story.schema.json",
     "state/self-build.json"
   ],
-  "delay_seconds": 0
+  "delay_seconds": 10
 }

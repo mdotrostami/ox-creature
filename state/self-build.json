@@ -1,7 +1,7 @@
 {
-  "cycle": 19,
+  "cycle": 20,
   "phase": "self-building",
-  "status": "deterministic-fallback",
-  "last_summary": "Self-build cycle 19: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
+  "status": "mutation-applied",
+  "last_summary": "Create exactly one missing product cell.",
   "ready_for_judgment": false
 }

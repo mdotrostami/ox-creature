@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "User Story",
+  "description": "A structured representation of a user story for the ox-creature project.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "A brief title summarizing the user story."
+    },
+    "actor": {
+      "type": "string",
+      "description": "The role or type of user who benefits from this story."
+    },
+    "goal": {
+      "type": "string",
+      "description": "What the actor wants to achieve."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the actor wants to achieve this goal."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Conditions that must be met for the story to be considered complete."
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Limitations or restrictions that apply to the implementation."
+    },
+    "proof_expected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Expected artifacts or evidence that will demonstrate completion."
+    }
+  },
+  "required": [
+    "title",
+    "actor",
+    "goal",
+    "reason",
+    "acceptance_criteria",
+    "constraints",
+    "proof_expected"
+  ]
+}
