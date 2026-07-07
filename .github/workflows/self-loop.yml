@@ -159,14 +159,8 @@ jobs:
           if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json \
             > state/llm-action-extract.log 2>&1; then
             cp state/llm-action-extract.log state/llm-action-error.txt
-            python3 -c 'import json
-from pathlib import Path
-try:
-    data = json.load(open("state/llm-response.json"))
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-except Exception as exc:
-    content = f"failed to read LLM response: {exc}"
-Path("state/llm-response-content.txt").write_text(str(content)[:4000])'
+            python3 -c "import json,pathlib; p=pathlib.Path('state/llm-response.json'); data=json.loads(p.read_text()); content=data.get('choices',[{}])[0].get('message',{}).get('content',''); pathlib.Path('state/llm-response-content.txt').write_text(str(content)[:4000])" \
+              || echo "failed to extract LLM response content" >> state/llm-action-error.txt
           fi
 
       - name: Apply one self-build mutation
