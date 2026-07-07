@@ -12,12 +12,7 @@ const STATE_PATH: &str = "state/self-build.json";
 const RESULT_PATH: &str = "state/self-build-result.json";
 const DEFAULT_DELAY_SECONDS: u64 = 0;
 
-const SECRET_MARKERS: &[&str] = &[
-    "sk-",
-    "ghp_",
-    "github_pat_",
-    "BEGIN PRIVATE KEY",
-];
+const SECRET_MARKERS: &[&str] = &["sk-", "ghp_", "github_pat_", "BEGIN PRIVATE KEY"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfBuildConfig {
@@ -450,16 +445,17 @@ fn apply_action(
     if action.files.len() > config.max_files_per_cycle {
         return Err(format!(
             "mutation touches too many files: {} > {}",
-            action.files.len(), config.max_files_per_cycle
+            action.files.len(),
+            config.max_files_per_cycle
         ));
     }
 
     let mut changed = Vec::new();
     for file in &action.files {
         let path = validate_mutation_path(&file.path, config)?;
-        let bytes = BASE64_STANDARD.decode(&file.content_base64).map_err(|err| {
-            format!("failed to decode base64 for {}: {err}", file.path)
-        })?;
+        let bytes = BASE64_STANDARD
+            .decode(&file.content_base64)
+            .map_err(|err| format!("failed to decode base64 for {}: {err}", file.path))?;
         if bytes.len() > config.max_bytes_per_file {
             return Err(format!(
                 "{} exceeds max_bytes_per_file: {} > {}",
@@ -475,7 +471,8 @@ fn apply_action(
             fs::create_dir_all(parent)
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
-        fs::write(&path, text).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        fs::write(&path, text)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
         changed.push(file.path.clone());
     }
 
@@ -669,7 +666,8 @@ fn load_config() -> Result<SelfBuildConfig, String> {
     if !path.is_file() {
         return Ok(SelfBuildConfig::default());
     }
-    let text = fs::read_to_string(path).map_err(|err| format!("failed to read {CONFIG_PATH}: {err}"))?;
+    let text =
+        fs::read_to_string(path).map_err(|err| format!("failed to read {CONFIG_PATH}: {err}"))?;
     serde_json::from_str(&text).map_err(|err| format!("invalid {CONFIG_PATH}: {err}"))
 }
 
@@ -678,7 +676,8 @@ fn load_state() -> Result<SelfBuildState, String> {
     if !path.is_file() {
         return Ok(SelfBuildState::default());
     }
-    let text = fs::read_to_string(path).map_err(|err| format!("failed to read {STATE_PATH}: {err}"))?;
+    let text =
+        fs::read_to_string(path).map_err(|err| format!("failed to read {STATE_PATH}: {err}"))?;
     serde_json::from_str(&text).map_err(|err| format!("invalid {STATE_PATH}: {err}"))
 }
 
@@ -766,7 +765,8 @@ fn extract_first_json_object(text: &str) -> Result<String, String> {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    let begin = start.ok_or_else(|| "internal JSON extraction error".to_string())?;
+                    let begin =
+                        start.ok_or_else(|| "internal JSON extraction error".to_string())?;
                     return Ok(text[begin..=idx].to_string());
                 }
             }
