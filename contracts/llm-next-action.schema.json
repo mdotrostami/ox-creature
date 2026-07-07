@@ -1,18 +1,48 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ox-creature LLM Next Action Draft",
+  "title": "ox-creature LLM Next Self-Build Action",
   "type": "object",
-  "required": ["schema_version", "kind", "task_id", "action", "summary", "touched_files", "risks", "required_human_decision", "cost_note"],
+  "additionalProperties": false,
+  "required": ["decision", "summary"],
   "properties": {
-    "schema_version": { "type": "string", "const": "0.1.0" },
-    "kind": { "type": "string", "const": "next_action_draft" },
-    "task_id": { "type": "string" },
-    "action": { "type": "string", "enum": ["ask_human", "propose_plan", "propose_patch", "review", "stop"] },
-    "summary": { "type": "string" },
-    "touched_files": { "type": "array", "items": { "type": "string" }, "maxItems": 3 },
-    "risks": { "type": "array", "items": { "type": "string" } },
-    "required_human_decision": { "type": "boolean" },
-    "cost_note": { "type": "string" }
-  },
-  "additionalProperties": false
+    "decision": {
+      "type": "string",
+      "enum": ["continue", "ready_for_judgment", "sleep", "stop"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit_message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "delay_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "experience": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content_base64"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^(apps|config|contracts|docs|flows|src|state)/"
+          },
+          "content_base64": {
+            "type": "string",
+            "contentEncoding": "base64"
+          }
+        }
+      }
+    }
+  }
 }

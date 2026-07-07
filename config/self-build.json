@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "loop_delay_seconds": 0,
+  "max_cycles": 200,
+  "max_files_per_cycle": 3,
+  "max_bytes_per_file": 50000,
+  "allowed_path_prefixes": [
+    "apps/",
+    "config/",
+    "contracts/",
+    "docs/",
+    "flows/",
+    "src/",
+    "state/"
+  ],
+  "forbidden_path_prefixes": [
+    ".git/",
+    "target/"
+  ],
+  "judgment_ready_marker": "state/judgment-ready.json"
+}

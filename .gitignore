@@ -1,6 +1,11 @@
 /target/
-/.creature/tmp/
-/.creature/llm/
-.env
-.env.*
-!.env.example
+
+# Runtime scratch artifacts. Durable state files remain tracked intentionally.
+state/llm-models.json
+state/llm-request.json
+state/llm-response.json
+state/llm-next-action.json
+state/self-build-context.json
+state/self-build-result.stdout.json
+state/validation.log
+state/failed-mutation.diff

@@ -1,0 +1,7 @@
+{
+  "cycle": 0,
+  "phase": "genesis",
+  "status": "self-build-ready",
+  "last_summary": "Self-build engine installed. The creature may now mutate itself through governed GitHub Actions cycles.",
+  "ready_for_judgment": false
+}

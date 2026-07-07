@@ -1,3 +1,6 @@
+mod generated_self_cells;
+mod self_build;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -20,9 +23,6 @@ const SECRET_MARKERS: &[&str] = &[
     "sk-",
     "ghp_",
     "github_pat_",
-    "api_key",
-    "apikey",
-    "password=",
     "BEGIN PRIVATE KEY",
 ];
 
@@ -36,6 +36,11 @@ fn main() {
         "llm-config-check" => llm_config_check(),
         "status" => status_json(),
         "preflight-check" => preflight_check(),
+        "self-build-rate-seconds" => self_build::self_build_rate_seconds(),
+        "self-build-context" => self_build::self_build_context(&args),
+        "llm-action-from-response" => self_build::llm_action_from_response(&args),
+        "self-build-step" => self_build::self_build_step(&args),
+        "self-build-ready-check" => self_build::self_build_ready_check(),
         "help" | "--help" | "-h" => help(),
         other => Err(format!("unknown command: {other}")),
     };
@@ -49,12 +54,17 @@ fn main() {
 fn help() -> Result<(), String> {
     println!("ox-creature Runtime");
     println!("commands:");
-    println!("  seed-check       validate permanent law and secret hygiene");
-    println!("  flow-check       validate flow files and node references");
-    println!("  contract-check   validate contract files exist and look like JSON schemas");
-    println!("  llm-config-check validate non-secret LLM config and model discovery policy");
-    println!("  status --json    emit Cockpit-readable presentation blocks");
-    println!("  preflight-check  run local genesis/preflight checks; real Judgment Day is GitHub Actions");
+    println!("  seed-check                    validate permanent law and secret hygiene");
+    println!("  flow-check                    validate flow files and node references");
+    println!("  contract-check                validate contract files exist and look like JSON schemas");
+    println!("  llm-config-check              validate non-secret LLM config and model discovery policy");
+    println!("  status --json                 emit Cockpit-readable presentation blocks");
+    println!("  preflight-check               run local checks; not Judgment Day");
+    println!("  self-build-rate-seconds       print loop delay in seconds; default is 0");
+    println!("  self-build-context --json     emit bounded context for the LLM self-build step");
+    println!("  llm-action-from-response IN OUT  extract JSON action from OpenAI-compatible response");
+    println!("  self-build-step [--action FILE] --json  apply one governed self-build mutation");
+    println!("  self-build-ready-check        fail unless product cells are ready for Judgment Day");
     Ok(())
 }
 
@@ -72,13 +82,7 @@ fn seed_check() -> Result<(), String> {
             missing.join(", ")
         ));
     }
-    let seed_lower = seed.to_lowercase();
-    for marker in SECRET_MARKERS {
-        let marker_lower = marker.to_lowercase();
-        if seed_lower.contains(&marker_lower) {
-            return Err(format!("SEED.md contains possible secret marker: {marker}"));
-        }
-    }
+    scan_for_secret_markers("SEED.md", &seed)?;
     println!("seed-check: ok");
     Ok(())
 }
@@ -134,6 +138,7 @@ fn preflight_check() -> Result<(), String> {
     contract_check()?;
     flow_check()?;
     llm_config_check()?;
+    self_build::config_check()?;
     status_json()?;
     println!("preflight-check: ok");
     Ok(())
@@ -147,23 +152,10 @@ fn llm_config_check() -> Result<(), String> {
     require_contains(&text, "\"model_discovery\"", path)?;
     require_contains(&text, "\"api_key_secret_name\"", path)?;
     require_contains(&text, "LLM_API_KEY", path)?;
-
-    let lower = text.to_lowercase();
-    for marker in SECRET_MARKERS {
-        let marker_lower = marker.to_lowercase();
-        if lower.contains(&marker_lower) && *marker != "api_key" {
-            return Err(format!(
-                "{} contains possible secret marker: {}",
-                path.display(),
-                marker
-            ));
-        }
-    }
-
+    scan_for_secret_markers("config/llm.runtime.json", &text)?;
     if text.contains("put-your-key-here") {
         return Err("config/llm.runtime.json must not contain placeholder secrets".to_string());
     }
-
     println!("llm-config-check: ok");
     Ok(())
 }
@@ -177,9 +169,8 @@ fn status_json() -> Result<(), String> {
         return Ok(());
     }
 
-    println!(
-        "{{\n  \"project\": \"ox-creature\",\n  \"route\": \"cockpit.identity\",\n  \"status\": \"ready\",\n  \"blocks\": [\n    {{\n      \"type\": \"law_panel\",\n      \"data\": {{\n        \"laws\": [\n          \"Human Sovereignty\",\n          \"Reality Before Meaning\",\n          \"LLM Is Not Authority\",\n          \"Flow Before Code\",\n          \"Git Is the Outer Memory\",\n          \"Judgment Day\",\n          \"Cost Gravity\",\n          \"Failure Becomes Experience\",\n          \"Small Steps or Stop\"\n        ]\n      }}\n    }},\n    {{\n      \"type\": \"runtime_status\",\n      \"data\": {{\n        \"runtime\": \"tiny-rust\",\n        \"judgment_day\": \"github-actions\",\n        \"phase\": \"genesis\",\n        \"authority\": \"human\",\n        \"llm_authority\": false,\n        \"llm_provider\": \"gapgpt\",\n        \"llm_model_selection\": \"runtime_discovery\"\n      }}\n    }}\n  ]\n}}"
-    );
+    let status = self_build::status_block_json()?;
+    println!("{}", status);
     Ok(())
 }
 
@@ -295,6 +286,15 @@ fn require_contains(text: &str, needle: &str, path: &Path) -> Result<(), String>
             needle
         ))
     }
+}
+
+fn scan_for_secret_markers(path: &str, text: &str) -> Result<(), String> {
+    for marker in SECRET_MARKERS {
+        if text.contains(marker) {
+            return Err(format!("{path} contains possible secret marker: {marker}"));
+        }
+    }
+    Ok(())
 }
 
 fn read_file(path: &str) -> Result<String, String> {

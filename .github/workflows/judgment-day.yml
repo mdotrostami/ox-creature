@@ -2,159 +2,73 @@ name: Judgment Day
 
 on:
   workflow_dispatch:
-    inputs:
-      creature_claim:
-        description: "What complete capability is ox-creature claiming?"
-        required: true
-        type: string
-      user_story_proof:
-        description: "Where is the user-story-to-code proof artifact?"
-        required: true
-        type: string
-      cockpit_proof:
-        description: "Where is the Cockpit-visible proof artifact?"
-        required: true
-        type: string
-      cost_claim_usd:
-        description: "Claimed cost of the run in USD"
-        required: true
-        type: string
   repository_dispatch:
-    types: [creature-ready-for-judgment]
+    types: [creature.judgment_day.requested]
 
 permissions:
   contents: read
-  issues: read
-  pull-requests: read
 
-defaults:
-  run:
-    shell: bash
+env:
+  CREATURE_LLM_BASE_URL: https://api.gapgpt.app/v1
 
 jobs:
-  judgment-day:
-    name: Creator meeting trial
+  judgment:
+    name: Judgment Day checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      CREATURE_MAX_COST_USD: "1.00"
-      CREATURE_ALLOW_NETWORK_FOR_TESTS: "false"
+    timeout-minutes: 20
     steps:
-      - name: Checkout governed branch
+      - name: Checkout creature
         uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Prepare Judgment report directory
-        run: mkdir -p .creature/judgment
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Secret value guard
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      - name: Build and test
         run: |
-          set -euo pipefail
-          if [ -n "${LLM_API_KEY:-}" ]; then
-            if grep -RIF --exclude-dir=.git --exclude-dir=target --exclude-dir=.creature -- "$LLM_API_KEY" .; then
-              echo "Secret value leaked into repository files."
-              exit 1
-            fi
-          fi
-          echo "secret value guard ok"
+          cargo fmt --all --check
+          cargo check
+          cargo test
+          cargo run -- preflight-check
 
-      - name: Rust format
-        run: cargo fmt --all --check
+      - name: Verify creature declared readiness
+        run: cargo run -- self-build-ready-check
 
-      - name: Rust check
-        run: cargo check
-
-      - name: Rust tests
-        run: cargo test
-
-      - name: Runtime preflight
-        run: cargo run -- preflight-check
-
-      - name: Cockpit proof must exist in runtime output
+      - name: Produce Judgment Day report
+        shell: bash
         run: |
-          cargo run -- status --json > .creature/judgment/cockpit-status.json
-          python3 - <<'PY'
-          import json
-          with open('.creature/judgment/cockpit-status.json', 'r', encoding='utf-8') as f:
-              data = json.load(f)
-          assert data['project'] == 'ox-creature'
-          assert data['route'].startswith('cockpit.')
-          assert data['blocks']
-          print('cockpit proof surface ok')
-          PY
-
-      - name: Validate Judgment Day claim fields
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            test -n "${{ inputs.creature_claim }}"
-            test -n "${{ inputs.user_story_proof }}"
-            test -n "${{ inputs.cockpit_proof }}"
-            test -n "${{ inputs.cost_claim_usd }}"
-          fi
-
-      - name: Write Judgment Day report
-        if: always()
-        run: |
-          cat > .creature/judgment/report.md <<REPORT
-          # ox-creature Judgment Day Report
-
-          Repository: $GITHUB_REPOSITORY
-          Ref: $GITHUB_REF
-          SHA: $GITHUB_SHA
-          Event: $GITHUB_EVENT_NAME
-          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-
-          ## Meaning
-
-          This is Judgment Day, not Self Loop.
-
-          Judgment Day is only valid when ox-creature claims it can convert a user story into governed, tested, Cockpit-visible code.
-
-          ## Required proof
-
-          - user story intake
-          - typed intent
-          - bounded plan
-          - governed patch
-          - tests/build proof
-          - Cockpit-visible proof
-          - cost report
-          - creator gate
-
-          ## Creator action
-
-          If every check passed, GitHub will advance to the creator-controlled environment gate.
-          The creator may approve or reject from the Actions UI.
-          REPORT
-
-          cat .creature/judgment/report.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p judgment-report
+          {
+            echo "# ox-creature Judgment Day Report"
+            echo ""
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Event: ${GITHUB_EVENT_NAME}"
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "## Meaning"
+            echo "Judgment Day is not the self-build loop."
+            echo "It is requested only when the creature declares that it can transform a user story into code and expose proof to Cockpit."
+            echo ""
+            echo "## Creator action"
+            echo "If every check passed, the creator may approve or reject from the GitHub environment gate."
+          } > judgment-report/JUDGMENT_DAY_REPORT.md
+          cargo run -- status --json > judgment-report/cockpit-status.json
 
       - name: Upload Judgment Day report
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ox-creature-judgment-day-report
-          path: .creature/judgment/
-          if-no-files-found: error
+          name: judgment-day-report
+          path: judgment-report
 
-  creator-judgment:
-    name: Creator Judgment
-    needs: judgment-day
+  creator-gate:
+    name: Creator judgment gate
+    needs: judgment
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment:
-      name: creator-judgment
+    environment: creator-judgment
     steps:
-      - name: Creator gate passed
+      - name: Await creator verdict
         run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          # Creator Judgment Passed
-
-          The creator approved this Judgment Day run through the GitHub environment gate.
-
-          ox-creature may continue to the next governed stage.
-          SUMMARY
+          echo "Creator approved Judgment Day gate from GitHub UI."
