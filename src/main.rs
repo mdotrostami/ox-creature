@@ -19,12 +19,7 @@ const REQUIRED_LAWS: &[&str] = &[
     "Small Steps or Stop",
 ];
 
-const SECRET_MARKERS: &[&str] = &[
-    "sk-",
-    "ghp_",
-    "github_pat_",
-    "BEGIN PRIVATE KEY",
-];
+const SECRET_MARKERS: &[&str] = &["sk-", "ghp_", "github_pat_", "BEGIN PRIVATE KEY"];
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -56,15 +51,23 @@ fn help() -> Result<(), String> {
     println!("commands:");
     println!("  seed-check                    validate permanent law and secret hygiene");
     println!("  flow-check                    validate flow files and node references");
-    println!("  contract-check                validate contract files exist and look like JSON schemas");
-    println!("  llm-config-check              validate non-secret LLM config and model discovery policy");
+    println!(
+        "  contract-check                validate contract files exist and look like JSON schemas"
+    );
+    println!(
+        "  llm-config-check              validate non-secret LLM config and model discovery policy"
+    );
     println!("  status --json                 emit Cockpit-readable presentation blocks");
     println!("  preflight-check               run local checks; not Judgment Day");
     println!("  self-build-rate-seconds       print loop delay in seconds; default is 0");
     println!("  self-build-context --json     emit bounded context for the LLM self-build step");
-    println!("  llm-action-from-response IN OUT  extract JSON action from OpenAI-compatible response");
+    println!(
+        "  llm-action-from-response IN OUT  extract JSON action from OpenAI-compatible response"
+    );
     println!("  self-build-step [--action FILE] --json  apply one governed self-build mutation");
-    println!("  self-build-ready-check        fail unless product cells are ready for Judgment Day");
+    println!(
+        "  self-build-ready-check        fail unless product cells are ready for Judgment Day"
+    );
     Ok(())
 }
 
