@@ -49,7 +49,8 @@ pub struct LlmMutationAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutationFile {
     pub path: String,
-    pub content_base64: String,
+    pub content_base64: Option<String>,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +148,8 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
     let experience = read_optional("EXPERIENCE.md");
     let tasks = read_optional("current_tasks.txt");
 
+    let recommended_next = recommended_next_actions(&missing_cells);
+
     let context = json!({
         "project": "ox-creature",
         "role": "self-build-context",
@@ -170,7 +173,8 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
         "target_product": {
             "definition": "A tiny Rust runtime + markdown constitution + GitHub Actions + LLM that self-builds until it can turn a user story into code and expose proof to Cockpit, then asks for Judgment Day.",
             "cells": target_cells,
-            "missing_cells": missing_cells
+            "missing_cells": missing_cells,
+            "recommended_next_actions": recommended_next
         },
         "source_context": {
             "seed_excerpt": truncate(&seed, 5000),
@@ -181,10 +185,22 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "type": "json-only",
             "schema_file": "contracts/llm-next-action.schema.json",
             "allowed_decisions": ["continue", "ready_for_judgment", "sleep", "stop"],
+            "minimum_valid_continue": {
+                "decision": "continue",
+                "summary": "Create exactly one missing product cell.",
+                "commit_message": "self-build: add user story contract",
+                "files": [
+                    {
+                        "path": "contracts/user-story.schema.json",
+                        "content": "FULL FILE CONTENT AS PLAIN UTF-8 TEXT"
+                    }
+                ]
+            },
             "rules": [
                 "Choose exactly one small missing target cell.",
                 "Modify at most max_files_per_cycle files.",
-                "Return full file contents as base64.",
+                "Prefer the plain content field for UTF-8 text files; content_base64 is also accepted.",
+                "Return full file contents, not a diff.",
                 "Never include secrets.",
                 "Never mutate .github workflows unless a human patch explicitly changes them.",
                 "Do not claim ready_for_judgment until user story intake, materialization, and cockpit proof cells exist."
@@ -453,19 +469,15 @@ fn apply_action(
     let mut changed = Vec::new();
     for file in &action.files {
         let path = validate_mutation_path(&file.path, config)?;
-        let bytes = BASE64_STANDARD
-            .decode(&file.content_base64)
-            .map_err(|err| format!("failed to decode base64 for {}: {err}", file.path))?;
-        if bytes.len() > config.max_bytes_per_file {
+        let text = mutation_file_text(file)?;
+        if text.len() > config.max_bytes_per_file {
             return Err(format!(
                 "{} exceeds max_bytes_per_file: {} > {}",
                 file.path,
-                bytes.len(),
+                text.len(),
                 config.max_bytes_per_file
             ));
         }
-        let text = String::from_utf8(bytes)
-            .map_err(|err| format!("{} is not valid UTF-8: {err}", file.path))?;
         scan_for_secret_markers(&file.path, &text)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -496,6 +508,23 @@ fn apply_action(
         changed_files: changed,
         delay_seconds: action.delay_seconds.unwrap_or(config.loop_delay_seconds),
     })
+}
+
+fn mutation_file_text(file: &MutationFile) -> Result<String, String> {
+    if let Some(content) = &file.content {
+        return Ok(content.clone());
+    }
+    if let Some(content_base64) = &file.content_base64 {
+        let bytes = BASE64_STANDARD
+            .decode(content_base64)
+            .map_err(|err| format!("failed to decode base64 for {}: {err}", file.path))?;
+        return String::from_utf8(bytes)
+            .map_err(|err| format!("{} is not valid UTF-8: {err}", file.path));
+    }
+    Err(format!(
+        "{} must include either content or content_base64",
+        file.path
+    ))
 }
 
 fn deterministic_fallback(
@@ -562,6 +591,23 @@ fn validate_action_shape(action: &LlmMutationAction) -> Result<(), String> {
             return Err("commit_message must be <= 120 characters".to_string());
         }
     }
+    for file in &action.files {
+        if file.path.trim().is_empty() {
+            return Err("mutation file path is empty".to_string());
+        }
+        if file.content.is_none() && file.content_base64.is_none() {
+            return Err(format!(
+                "{} must include either content or content_base64",
+                file.path
+            ));
+        }
+        if file.content.is_some() && file.content_base64.is_some() {
+            return Err(format!(
+                "{} must not include both content and content_base64",
+                file.path
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -600,6 +646,36 @@ fn validate_mutation_path(path: &str, config: &SelfBuildConfig) -> Result<PathBu
         return Err(format!("path is outside allowed mutation prefixes: {path}"));
     }
     Ok(PathBuf::from(path))
+}
+
+fn recommended_next_actions(missing_cells: &[TargetCell]) -> Vec<Value> {
+    missing_cells
+        .iter()
+        .filter(|cell| cell.id != "judgment.readiness_marker")
+        .take(3)
+        .map(|cell| {
+            json!({
+                "cell_id": cell.id,
+                "proof_path": cell.proof_path,
+                "instruction": recommended_instruction(cell)
+            })
+        })
+        .collect()
+}
+
+fn recommended_instruction(cell: &TargetCell) -> &'static str {
+    match cell.id.as_str() {
+        "user_story.intake_contract" => {
+            "Create a JSON schema for user stories with title, actor, goal, reason, acceptance_criteria, constraints, and proof_expected fields."
+        }
+        "materialization.patch_contract" => {
+            "Create a JSON schema for bounded materialized patches with files, hashes, validation commands, rollback notes, and proof fields."
+        }
+        "cockpit.surface" => {
+            "Create a minimal Cockpit README describing the presentation blocks for state, flow, diff, risk, proof, and Judgment Day readiness."
+        }
+        _ => "Create the smallest valid artifact proving this cell exists without claiming Judgment Day readiness.",
+    }
 }
 
 fn target_cells(config: &SelfBuildConfig) -> Vec<TargetCell> {

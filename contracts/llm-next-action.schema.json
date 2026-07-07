@@ -31,11 +31,18 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "content_base64"],
+        "required": ["path"],
+        "oneOf": [
+          { "required": ["content"] },
+          { "required": ["content_base64"] }
+        ],
         "properties": {
           "path": {
             "type": "string",
             "pattern": "^(apps|config|contracts|docs|flows|src|state)/"
+          },
+          "content": {
+            "type": "string"
           },
           "content_base64": {
             "type": "string",

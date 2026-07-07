@@ -136,7 +136,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           context=open('state/self-build-context.json').read()
-          system = """You are the advisory intelligence inside ox-creature self-build. You are not authority. The Rust runtime is authority. Return JSON only. Do one tiny safe mutation toward the target product. Do not include secrets. Do not edit .github workflows. Encode full file contents as base64."""
+          system = """You are the advisory intelligence inside ox-creature self-build. You are not authority. The Rust runtime validates everything. Return one JSON object only, with no markdown and no prose. Do exactly one tiny safe mutation toward the target product. Prefer creating the first missing product cell from target_product.recommended_next_actions. Do not include secrets. Do not edit .github workflows. Return full file contents using the plain content field for UTF-8 files; content_base64 is optional."""
           payload={
             "model": os.environ['MODEL_ID'],
             "messages": [
@@ -148,12 +148,28 @@ jobs:
           }
           open('state/llm-request.json','w').write(json.dumps(payload))
           PY
-          curl -sS -f \
+          if ! curl -sS -f \
             -H "Authorization: Bearer ${LLM_API_KEY}" \
             -H "Content-Type: application/json" \
             "${base}/chat/completions" \
-            -d @state/llm-request.json > state/llm-response.json
-          cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json || true
+            -d @state/llm-request.json > state/llm-response.json; then
+            echo "chat completion failed" > state/llm-action-error.txt
+            exit 0
+          fi
+          if ! cargo run -- llm-action-from-response state/llm-response.json state/llm-next-action.json \
+            > state/llm-action-extract.log 2>&1; then
+            cp state/llm-action-extract.log state/llm-action-error.txt
+            python3 - <<'PYERR'
+            import json
+            from pathlib import Path
+            try:
+                data=json.load(open('state/llm-response.json'))
+                content=data.get('choices',[{}])[0].get('message',{}).get('content','')
+            except Exception as exc:
+                content=f'failed to read LLM response: {exc}'
+            Path('state/llm-response-content.txt').write_text(str(content)[:4000])
+            PYERR
+          fi
 
       - name: Apply one self-build mutation
         shell: bash
@@ -161,6 +177,16 @@ jobs:
           if [ -f state/llm-next-action.json ]; then
             cargo run -- self-build-step --action state/llm-next-action.json --json > state/self-build-result.stdout.json
           else
+            if [ -f state/llm-action-error.txt ]; then
+              {
+                echo ""
+                echo "## LLM self-build action rejected before runtime apply"
+                echo ""
+                echo '```text'
+                sed -n '1,160p' state/llm-action-error.txt
+                echo '```'
+              } >> EXPERIENCE.md
+            fi
             cargo run -- self-build-step --json > state/self-build-result.stdout.json
           fi
 
@@ -288,17 +314,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          echo "Dispatching the next Self Build Loop run with workflow_dispatch."
-          payload=$(python3 - <<'PY'
-          import json
-          print(json.dumps({"ref":"main"}))
-          PY
-          )
-          curl --fail --show-error --silent -X POST \
+          curl --fail -sS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/self-loop.yml/dispatches" \
-            -d "${payload}"
-          echo "Next Self Build Loop run requested."
+            -d '{"ref":"main"}'
+          echo "Dispatch next Self Build Loop run requested."
