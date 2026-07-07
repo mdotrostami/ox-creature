@@ -67,7 +67,10 @@ fn seed_check() -> Result<(), String> {
         }
     }
     if !missing.is_empty() {
-        return Err(format!("SEED.md missing required laws: {}", missing.join(", ")));
+        return Err(format!(
+            "SEED.md missing required laws: {}",
+            missing.join(", ")
+        ));
     }
     let seed_lower = seed.to_lowercase();
     for marker in SECRET_MARKERS {
@@ -277,14 +280,20 @@ fn read_json_string(bytes: &[u8], start: usize) -> Option<(String, usize)> {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn require_contains(text: &str, needle: &str, path: &Path) -> Result<(), String> {
     if text.contains(needle) {
         Ok(())
     } else {
-        Err(format!("{} missing required marker {}", path.display(), needle))
+        Err(format!(
+            "{} missing required marker {}",
+            path.display(),
+            needle
+        ))
     }
 }
 
@@ -298,7 +307,9 @@ fn read_path(path: &Path) -> Result<String, String> {
 
 fn read_dir_sorted(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
-    for entry in fs::read_dir(path).map_err(|err| format!("failed to read {}: {err}", path.display()))? {
+    for entry in
+        fs::read_dir(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?
+    {
         let entry = entry.map_err(|err| format!("failed to read directory entry: {err}"))?;
         paths.push(entry.path());
     }
