@@ -49,3 +49,7 @@ Self-build cycle 33 rejected. no valid LLM action was available for this self-bu
 ## Self-build experience
 
 Self-build cycle 34 rejected. LLM action rejected before commit: src/main.rs mutation would break protected runtime command surface; missing markers: mod self_build;, seed-check, flow-check, contract-check, llm-config-check, self-build-rate-seconds, self-build-context, llm-action-from-response, self-build-step, self-build-ready-check, self_build::self_build_rate_seconds(), self_build::self_build_context(&args), self_build::llm_action_from_response(&args), self_build::self_build_step(&args), self_build::self_build_ready_check()
+
+## Self-build experience
+
+Self-build cycle 35 rejected. no valid LLM action was available for this self-build cycle
