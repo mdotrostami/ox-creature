@@ -1,54 +1,28 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "User Story",
-  "description": "A structured representation of a user story for the ox-creature project.",
+  "description": "A user story contract for ox-creature intake.",
   "type": "object",
   "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the user story."
+    },
     "title": {
       "type": "string",
-      "description": "A brief title summarizing the user story."
+      "description": "Short title of the user story."
     },
-    "actor": {
+    "description": {
       "type": "string",
-      "description": "The role or type of user who benefits from this story."
-    },
-    "goal": {
-      "type": "string",
-      "description": "What the actor wants to achieve."
-    },
-    "reason": {
-      "type": "string",
-      "description": "Why the actor wants to achieve this goal."
+      "description": "Detailed description of the user story."
     },
     "acceptance_criteria": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Conditions that must be met for the story to be considered complete."
-    },
-    "constraints": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Limitations or restrictions that apply to the implementation."
-    },
-    "proof_expected": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Expected artifacts or evidence that will demonstrate completion."
+      "description": "List of acceptance criteria for the user story."
     }
   },
-  "required": [
-    "title",
-    "actor",
-    "goal",
-    "reason",
-    "acceptance_criteria",
-    "constraints",
-    "proof_expected"
-  ]
+  "required": ["id", "title", "description", "acceptance_criteria"]
 }
