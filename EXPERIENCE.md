@@ -101,3 +101,14 @@ Self-build cycle 46 rejected. no valid LLM action was available for this self-bu
 ## Self-build experience
 
 Self-build cycle 47 rejected. no valid LLM action was available for this self-build cycle
+
+## LLM self-build action unavailable
+
+```text
+chat completion failed for model gapgpt-qwen-3.5
+```
+
+## Self-build experience
+
+Self-build cycle 48 rejected. no valid LLM action was available for this self-build cycle; diagnostic written to state/self-build-llm-diagnostics/cycle-000048.json; selected_model=gapgpt-qwen-3.5; detail: chat completion failed for model gapgpt-qwen-3.5
+

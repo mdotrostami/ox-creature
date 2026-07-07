@@ -65,9 +65,15 @@
       "task_id": "007",
       "reason": "no valid LLM action was available for this self-build cycle",
       "repair_directive": "Recovery for current task 007: the previous cycle produced no useful patch. Use current_task.allowed_files and current_task.validation to create one concrete, non-placeholder, validating change."
+    },
+    {
+      "cycle": 48,
+      "task_id": "007",
+      "reason": "no valid LLM action was available for this self-build cycle; diagnostic written to state/self-build-llm-diagnostics/cycle-000048.json; selected_model=gapgpt-qwen-3.5; detail: chat completion failed for model gapgpt-qwen-3.5\n",
+      "repair_directive": "Recovery for current task 007: the previous cycle did not produce valid action JSON. Read the LLM diagnostic artifact, then return exactly one raw JSON object matching contracts/llm-next-action.schema.json. Do not write prose, markdown, analysis, or code fences. Use current_task.allowed_files, source_context.allowed_file_snapshots, and current_task.validation to create one concrete validating change."
     }
   ],
-  "latest_repair_directive": "Recovery for current task 007: the previous cycle produced no useful patch. Use current_task.allowed_files and current_task.validation to create one concrete, non-placeholder, validating change.",
+  "latest_repair_directive": "Recovery for current task 007: the previous cycle did not produce valid action JSON. Read the LLM diagnostic artifact, then return exactly one raw JSON object matching contracts/llm-next-action.schema.json. Do not write prose, markdown, analysis, or code fences. Use current_task.allowed_files, source_context.allowed_file_snapshots, and current_task.validation to create one concrete validating change.",
   "active_recovery_task_id": "007",
   "recent_rollbacks": []
 }

@@ -1,0 +1,13 @@
+{
+  "action_error_excerpt": "chat completion failed for model gapgpt-qwen-3.5\n",
+  "cycle": 48,
+  "primary_extract_log_excerpt": "\u001b[1m\u001b[92m    Finished\u001b[0m `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n\u001b[1m\u001b[92m     Running\u001b[0m `target/debug/ox-creature llm-action-from-response state/llm-response.json state/llm-next-action.json`\nllm-action-from-response: ok state/llm-next-action.json\n",
+  "recovery_expectation": "Next cycle must use this diagnostic and return exactly one JSON action matching contracts/llm-next-action.schema.json.",
+  "repair_extract_log_excerpt": "",
+  "repair_response_content_excerpt": "",
+  "repair_response_content_hash": "fnv64:cbf29ce484222325",
+  "response_content_excerpt": "",
+  "response_content_hash": "fnv64:cbf29ce484222325",
+  "selected_model": "gapgpt-qwen-3.5",
+  "summary": "LLM did not produce a valid self-build action JSON for this cycle."
+}

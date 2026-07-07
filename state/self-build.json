@@ -1,7 +1,7 @@
 {
-  "cycle": 47,
+  "cycle": 48,
   "phase": "self-building",
   "status": "action-rejected",
-  "last_summary": "no valid LLM action was available for this self-build cycle",
+  "last_summary": "no valid LLM action was available for this self-build cycle; diagnostic written to state/self-build-llm-diagnostics/cycle-000048.json; selected_model=gapgpt-qwen-3.5; detail: chat completion failed for model gapgpt-qwen-3.5\n",
   "ready_for_judgment": false
 }
