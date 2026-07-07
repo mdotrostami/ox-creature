@@ -1,12 +1,12 @@
 {
   "status": "fallback-mutated",
-  "cycle": 7,
-  "summary": "Self-build cycle 7: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
-  "commit_message": "self-build: fallback cycle 7",
+  "cycle": 8,
+  "summary": "Self-build cycle 8: no valid LLM patch was available, so the runtime advanced by deterministic heartbeat.",
+  "commit_message": "self-build: fallback cycle 8",
   "should_continue": true,
   "ready_for_judgment": false,
   "changed_files": [
-    "state/self-build-cycles/cycle-000007.md",
+    "state/self-build-cycles/cycle-000008.md",
     "src/generated_self_cells.rs",
     "state/self-build.json"
   ],
