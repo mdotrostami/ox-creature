@@ -190,6 +190,7 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "Only mutate files listed in current_task.allowed_files.",
             "Never mutate current_tasks.txt, state/self-build.json, state/self-build-result.json, .github workflows, secrets, target/, or .git/.",
             "The runtime advances current_tasks.txt after validation succeeds; the LLM must not edit the task ledger.",
+            "The runtime may run deterministic repair such as rustfmt before validation; the LLM still owns the semantic patch.",
             "If the task cannot be safely done, use decision=sleep or stop with a precise reason; do not fake progress.",
             "Do not declare ready_for_judgment while any task remains or any product proof is weak."
         ],
@@ -332,9 +333,7 @@ pub fn self_build_ready_check() -> Result<(), String> {
         ));
     }
     if !all_tasks_done()? {
-        return Err(
-            "not ready for Judgment Day: current_tasks.txt still has NEXT/TODO work".to_string(),
-        );
+        return Err("not ready for Judgment Day: current_tasks.txt still has NEXT/TODO work".to_string());
     }
     let invalid_cells = invalid_product_cells(&config, true)?;
     if !invalid_cells.is_empty() {
@@ -431,10 +430,7 @@ fn apply_action(
 
     if decision == "ready_for_judgment" {
         if current.is_some() {
-            return Err(
-                "ready_for_judgment is forbidden while current_tasks.txt has a [NEXT] task"
-                    .to_string(),
-            );
+            return Err("ready_for_judgment is forbidden while current_tasks.txt has a [NEXT] task".to_string());
         }
         if !all_tasks_done()? {
             return Err("ready_for_judgment is forbidden while TODO tasks remain".to_string());
@@ -482,10 +478,7 @@ fn apply_action(
         return rejection_cycle(
             config,
             state,
-            format!(
-                "LLM requested stop instead of completing the task: {}",
-                action.summary
-            ),
+            format!("LLM requested stop instead of completing the task: {}", action.summary),
         );
     }
 
@@ -554,10 +547,16 @@ fn apply_action(
         return rejection_cycle(
             config,
             state,
-            format!(
-                "task {} rejected: action produced no material file changes",
-                task.id
-            ),
+            format!("task {} rejected: action produced no material file changes", task.id),
+        );
+    }
+
+    if let Err(err) = run_deterministic_repair_pass(&material_changes) {
+        rollback_files(&backups)?;
+        return rejection_cycle(
+            config,
+            state,
+            format!("task {} deterministic repair failed after rollback: {err}", task.id),
         );
     }
 
@@ -617,16 +616,11 @@ fn validate_task_action(
     if action.files.len() > config.max_files_per_cycle {
         return Err(format!(
             "mutation touches too many files: {} > {}",
-            action.files.len(),
-            config.max_files_per_cycle
+            action.files.len(), config.max_files_per_cycle
         ));
     }
     for file in &action.files {
-        if !task
-            .allowed_files
-            .iter()
-            .any(|allowed| allowed == &file.path)
-        {
+        if !task.allowed_files.iter().any(|allowed| allowed == &file.path) {
             return Err(format!(
                 "{} is not allowed for task {}; allowed files: {}",
                 file.path,
@@ -634,10 +628,7 @@ fn validate_task_action(
                 task.allowed_files.join(", ")
             ));
         }
-        if file.path == TASKS_PATH
-            || file.path.starts_with("state/")
-            || file.path.starts_with(".github/")
-        {
+        if file.path == TASKS_PATH || file.path.starts_with("state/") || file.path.starts_with(".github/") {
             return Err(format!(
                 "LLM may not mutate ledger/state/workflows directly: {}",
                 file.path
@@ -720,6 +711,26 @@ fn rollback_files(backups: &[FileBackup]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_deterministic_repair_pass(changed_files: &[String]) -> Result<(), String> {
+    let touches_rust = changed_files.iter().any(|path| path.ends_with(".rs"));
+    if !touches_rust {
+        return Ok(());
+    }
+
+    let output = Command::new("cargo")
+        .args(["fmt", "--all"])
+        .output()
+        .map_err(|err| format!("failed to run deterministic rustfmt repair: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "deterministic rustfmt repair failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
 fn run_task_validation(task: &SelfBuildTask) -> Result<(), String> {
     if task.validation.is_empty() {
         return Err(format!("task {} has no validation commands", task.id));
@@ -738,48 +749,35 @@ fn run_allowed_validation_command(command: &str) -> Result<(), String> {
         "cargo test" => ("cargo", vec!["test"]),
         "cargo run -- preflight-check" => ("cargo", vec!["run", "--", "preflight-check"]),
         "cargo run -- git-status --json" => ("cargo", vec!["run", "--", "git-status", "--json"]),
-        "cargo run -- creature-init --json" => {
-            ("cargo", vec!["run", "--", "creature-init", "--json"])
+        "cargo run -- creature-init --json" => ("cargo", vec!["run", "--", "creature-init", "--json"]),
+        "cargo run -- user-story-intake --demo --json" => {
+            ("cargo", vec!["run", "--", "user-story-intake", "--demo", "--json"])
         }
-        "cargo run -- user-story-intake --demo --json" => (
-            "cargo",
-            vec!["run", "--", "user-story-intake", "--demo", "--json"],
-        ),
-        "cargo run -- intent-candidate --demo --json" => (
-            "cargo",
-            vec!["run", "--", "intent-candidate", "--demo", "--json"],
-        ),
-        "cargo run -- plan-object --demo --json" => (
-            "cargo",
-            vec!["run", "--", "plan-object", "--demo", "--json"],
-        ),
-        "cargo run -- proposal-object --demo --json" => (
-            "cargo",
-            vec!["run", "--", "proposal-object", "--demo", "--json"],
-        ),
-        "cargo run -- patch-artifact --demo --json" => (
-            "cargo",
-            vec!["run", "--", "patch-artifact", "--demo", "--json"],
-        ),
-        "cargo run -- branch-guard --demo --json" => (
-            "cargo",
-            vec!["run", "--", "branch-guard", "--demo", "--json"],
-        ),
-        "cargo run -- rollback-note --demo --json" => (
-            "cargo",
-            vec!["run", "--", "rollback-note", "--demo", "--json"],
-        ),
-        "cargo run -- judgment-report --demo --json" => (
-            "cargo",
-            vec!["run", "--", "judgment-report", "--demo", "--json"],
-        ),
-        "cargo run -- experience-write --demo --json" => (
-            "cargo",
-            vec!["run", "--", "experience-write", "--demo", "--json"],
-        ),
-        "cargo run -- cockpit-demo --json" => {
-            ("cargo", vec!["run", "--", "cockpit-demo", "--json"])
+        "cargo run -- intent-candidate --demo --json" => {
+            ("cargo", vec!["run", "--", "intent-candidate", "--demo", "--json"])
         }
+        "cargo run -- plan-object --demo --json" => {
+            ("cargo", vec!["run", "--", "plan-object", "--demo", "--json"])
+        }
+        "cargo run -- proposal-object --demo --json" => {
+            ("cargo", vec!["run", "--", "proposal-object", "--demo", "--json"])
+        }
+        "cargo run -- patch-artifact --demo --json" => {
+            ("cargo", vec!["run", "--", "patch-artifact", "--demo", "--json"])
+        }
+        "cargo run -- branch-guard --demo --json" => {
+            ("cargo", vec!["run", "--", "branch-guard", "--demo", "--json"])
+        }
+        "cargo run -- rollback-note --demo --json" => {
+            ("cargo", vec!["run", "--", "rollback-note", "--demo", "--json"])
+        }
+        "cargo run -- judgment-report --demo --json" => {
+            ("cargo", vec!["run", "--", "judgment-report", "--demo", "--json"])
+        }
+        "cargo run -- experience-write --demo --json" => {
+            ("cargo", vec!["run", "--", "experience-write", "--demo", "--json"])
+        }
+        "cargo run -- cockpit-demo --json" => ("cargo", vec!["run", "--", "cockpit-demo", "--json"]),
         "cargo run -- first-meeting-demo --json" => {
             ("cargo", vec!["run", "--", "first-meeting-demo", "--json"])
         }
@@ -863,9 +861,7 @@ fn validate_mutation_path(path: &str, config: &SelfBuildConfig) -> Result<PathBu
         return Err("self-build may not mutate .github workflows; use a human patch".to_string());
     }
     if path == TASKS_PATH || path == STATE_PATH || path == RESULT_PATH {
-        return Err(format!(
-            "self-build action may not mutate runtime-owned file: {path}"
-        ));
+        return Err(format!("self-build action may not mutate runtime-owned file: {path}"));
     }
     if !config
         .allowed_path_prefixes
@@ -878,9 +874,7 @@ fn validate_mutation_path(path: &str, config: &SelfBuildConfig) -> Result<PathBu
 }
 
 fn current_task() -> Result<Option<SelfBuildTask>, String> {
-    Ok(parse_tasks()?
-        .into_iter()
-        .find(|task| task.status == "NEXT"))
+    Ok(parse_tasks()?.into_iter().find(|task| task.status == "NEXT"))
 }
 
 fn all_tasks_done() -> Result<bool, String> {
@@ -994,10 +988,7 @@ fn advance_task_ledger(completed_task_id: &str) -> Result<(), String> {
         .map_err(|err| format!("failed to write {TASKS_PATH}: {err}"))
 }
 
-fn invalid_product_cells(
-    config: &SelfBuildConfig,
-    include_marker: bool,
-) -> Result<Vec<String>, String> {
+fn invalid_product_cells(config: &SelfBuildConfig, include_marker: bool) -> Result<Vec<String>, String> {
     let mut invalid = Vec::new();
     for cell in target_cells(config) {
         if !include_marker && cell.id == "judgment.readiness_marker" {
