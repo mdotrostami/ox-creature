@@ -11,6 +11,8 @@ use crate::generated_self_cells;
 const CONFIG_PATH: &str = "config/self-build.json";
 const STATE_PATH: &str = "state/self-build.json";
 const RESULT_PATH: &str = "state/self-build-result.json";
+const MEMORY_PATH: &str = "state/self-build-memory.json";
+const ROLLBACK_DIR: &str = "state/self-build-rollbacks";
 const TASKS_PATH: &str = "current_tasks.txt";
 const DEFAULT_DELAY_SECONDS: u64 = 0;
 
@@ -69,6 +71,33 @@ pub struct SelfBuildResult {
     pub delay_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SelfBuildMemory {
+    #[serde(default)]
+    recent_failures: Vec<SelfBuildFailure>,
+    latest_repair_directive: Option<String>,
+    active_recovery_task_id: Option<String>,
+    #[serde(default)]
+    recent_rollbacks: Vec<SelfBuildRollbackMemory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SelfBuildFailure {
+    cycle: u64,
+    task_id: Option<String>,
+    reason: String,
+    repair_directive: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SelfBuildRollbackMemory {
+    cycle: u64,
+    task_id: Option<String>,
+    reason: String,
+    rollback_status: String,
+    rollback_artifact: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct TargetCell {
     id: String,
@@ -92,6 +121,28 @@ struct SelfBuildTask {
 struct FileBackup {
     path: String,
     previous: Option<String>,
+    before_hash: Option<String>,
+    after_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RollbackArtifact {
+    cycle: u64,
+    task_id: Option<String>,
+    reason: String,
+    status: String,
+    entries: Vec<RollbackEntry>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RollbackEntry {
+    path: String,
+    existed_before: bool,
+    before_hash: Option<String>,
+    after_hash: String,
+    restored: bool,
+    error: Option<String>,
 }
 
 impl Default for SelfBuildConfig {
@@ -113,6 +164,17 @@ impl Default for SelfBuildConfig {
             ],
             forbidden_path_prefixes: vec![".git/".to_string(), "target/".to_string()],
             judgment_ready_marker: "state/judgment-ready.json".to_string(),
+        }
+    }
+}
+
+impl Default for SelfBuildMemory {
+    fn default() -> Self {
+        Self {
+            recent_failures: Vec::new(),
+            latest_repair_directive: None,
+            active_recovery_task_id: None,
+            recent_rollbacks: Vec::new(),
         }
     }
 }
@@ -168,6 +230,7 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
     let tasks = read_optional(TASKS_PATH);
     let seed = read_optional("SEED.md");
     let experience = read_optional("EXPERIENCE.md");
+    let memory = load_memory()?;
 
     let context = json!({
         "project": "ox-creature",
@@ -191,7 +254,9 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "Never mutate current_tasks.txt, state/self-build.json, state/self-build-result.json, .github workflows, secrets, target/, or .git/.",
             "The runtime advances current_tasks.txt after validation succeeds; the LLM must not edit the task ledger.",
             "The runtime may run deterministic repair such as rustfmt before validation; the LLM still owns the semantic patch.",
+            "If failure_memory.latest_repair_directive is present, treat it as mandatory recovery instruction for the next action.",
             "If editing src/main.rs, preserve the existing command router and all self-build commands. Add new commands; never replace the router.",
+            "On repeated rejection, do not retry the same shape. Read failure_memory and produce a smaller corrected patch.",
             "If the task cannot be safely done, use decision=sleep or stop with a precise reason; do not fake progress.",
             "Do not declare ready_for_judgment while any task remains or any product proof is weak."
         ],
@@ -205,6 +270,12 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
             "all_tasks_done": all_done,
             "current_task": current_task,
             "ledger_excerpt": truncate(&tasks, 6000)
+        },
+        "failure_memory": {
+            "active_recovery_task_id": memory.active_recovery_task_id,
+            "latest_repair_directive": memory.latest_repair_directive,
+            "recent_failures": memory.recent_failures,
+            "recent_rollbacks": memory.recent_rollbacks
         },
         "target_product": {
             "definition": "A tiny Rust runtime + markdown constitution + GitHub Actions + LLM that self-builds until it can turn a user story into code and expose proof to Cockpit, then asks for Judgment Day.",
@@ -237,7 +308,8 @@ pub fn self_build_context(args: &[String]) -> Result<(), String> {
                 "Keep changes small and task-scoped.",
                 "No secret markers.",
                 "No placeholder-only files unless the task explicitly asks for a placeholder.",
-                "No no-op rewrites. The changed file must materially satisfy the task goal."
+                "No no-op rewrites. The changed file must materially satisfy the task goal.",
+                "When failure_memory exists, explicitly avoid the previous failed mutation shape."
             ]
         }
     });
@@ -288,28 +360,42 @@ pub fn self_build_step(args: &[String]) -> Result<(), String> {
     }
 
     let action_path = read_flag_value(args, "--action");
+    let workflow_failure_path = read_flag_value(args, "--workflow-failure");
     let wants_json = args.iter().any(|arg| arg == "--json");
-    let result = match action_path {
-        Some(path) => match load_action(path) {
-            Ok(action) => match apply_action(action, &config, &mut state) {
-                Ok(result) => result,
+    let result = if let Some(path) = workflow_failure_path {
+        let reason = fs::read_to_string(&path)
+            .unwrap_or_else(|err| format!("failed to read workflow failure log {path}: {err}"));
+        rejection_cycle(
+            &config,
+            &mut state,
+            format!(
+                "workflow/preflight failure before mutation: {}",
+                truncate(&reason, 4000)
+            ),
+        )?
+    } else {
+        match action_path {
+            Some(path) => match load_action(path) {
+                Ok(action) => match apply_action(action, &config, &mut state) {
+                    Ok(result) => result,
+                    Err(err) => rejection_cycle(
+                        &config,
+                        &mut state,
+                        format!("LLM action rejected before commit: {err}"),
+                    )?,
+                },
                 Err(err) => rejection_cycle(
                     &config,
                     &mut state,
-                    format!("LLM action rejected before commit: {err}"),
+                    format!("failed to load LLM action: {err}"),
                 )?,
             },
-            Err(err) => rejection_cycle(
+            None => rejection_cycle(
                 &config,
                 &mut state,
-                format!("failed to load LLM action: {err}"),
+                "no valid LLM action was available for this self-build cycle".to_string(),
             )?,
-        },
-        None => rejection_cycle(
-            &config,
-            &mut state,
-            "no valid LLM action was available for this self-build cycle".to_string(),
-        )?,
+        }
     };
 
     write_json(RESULT_PATH, &result)?;
@@ -541,6 +627,8 @@ fn apply_action(
         }
         backups.push(FileBackup {
             path: file.path.clone(),
+            before_hash: previous.as_ref().map(|prior| stable_content_hash(prior)),
+            after_hash: stable_content_hash(&text),
             previous,
         });
         if let Some(parent) = path.parent() {
@@ -553,47 +641,44 @@ fn apply_action(
     }
 
     if material_changes.is_empty() {
-        rollback_files(&backups)?;
-        return rejection_cycle(
-            config,
-            state,
-            format!(
-                "task {} rejected: action produced no material file changes",
-                task.id
-            ),
+        let reason = format!(
+            "task {} rejected: action produced no material file changes",
+            task.id
         );
+        let rollback_path = rollback_files(&backups, next_cycle, Some(&task.id), &reason)?;
+        return rejection_cycle_with_changed(config, state, reason, vec![rollback_path]);
     }
 
     if let Err(err) = run_deterministic_repair_pass(&material_changes) {
-        rollback_files(&backups)?;
-        return rejection_cycle(
+        let reason = format!("task {} deterministic repair failed: {err}", task.id);
+        let rollback_path = rollback_files(&backups, next_cycle, Some(&task.id), &reason)?;
+        return rejection_cycle_with_changed(
             config,
             state,
-            format!(
-                "task {} deterministic repair failed after rollback: {err}",
-                task.id
-            ),
+            format!("{reason}; rollback artifact: {rollback_path}"),
+            vec![rollback_path],
         );
     }
 
     if let Err(err) = run_task_validation(&task) {
-        rollback_files(&backups)?;
-        return rejection_cycle(
+        let reason = format!("task {} validation failed: {err}", task.id);
+        let rollback_path = rollback_files(&backups, next_cycle, Some(&task.id), &reason)?;
+        return rejection_cycle_with_changed(
             config,
             state,
-            format!("task {} validation failed after rollback: {err}", task.id),
+            format!("{reason}; rollback artifact: {rollback_path}"),
+            vec![rollback_path],
         );
     }
 
     if let Err(err) = run_self_build_invariant_validation() {
-        rollback_files(&backups)?;
-        return rejection_cycle(
+        let reason = format!("task {} broke self-build invariants: {err}", task.id);
+        let rollback_path = rollback_files(&backups, next_cycle, Some(&task.id), &reason)?;
+        return rejection_cycle_with_changed(
             config,
             state,
-            format!(
-                "task {} broke self-build invariants after rollback: {err}",
-                task.id
-            ),
+            format!("{reason}; rollback artifact: {rollback_path}"),
+            vec![rollback_path],
         );
     }
 
@@ -696,6 +781,15 @@ fn rejection_cycle(
     state: &mut SelfBuildState,
     reason: String,
 ) -> Result<SelfBuildResult, String> {
+    rejection_cycle_with_changed(config, state, reason, Vec::new())
+}
+
+fn rejection_cycle_with_changed(
+    config: &SelfBuildConfig,
+    state: &mut SelfBuildState,
+    reason: String,
+    mut extra_changed_files: Vec<String>,
+) -> Result<SelfBuildResult, String> {
     let next_cycle = state.cycle + 1;
     fs::create_dir_all("state/self-build-rejections")
         .map_err(|err| format!("failed to create rejection directory: {err}"))?;
@@ -706,6 +800,7 @@ fn rejection_cycle(
     )
     .map_err(|err| format!("failed to write {rejection_path}: {err}"))?;
     record_experience(&format!("Self-build cycle {next_cycle} rejected. {reason}"))?;
+    record_rejection_memory(next_cycle, &reason)?;
 
     state.cycle = next_cycle;
     state.phase = "self-building".to_string();
@@ -714,6 +809,16 @@ fn rejection_cycle(
     state.ready_for_judgment = false;
     write_json(STATE_PATH, state)?;
 
+    let mut changed_files = vec![
+        rejection_path,
+        MEMORY_PATH.to_string(),
+        "EXPERIENCE.md".to_string(),
+        STATE_PATH.to_string(),
+    ];
+    changed_files.append(&mut extra_changed_files);
+    changed_files.sort();
+    changed_files.dedup();
+
     Ok(SelfBuildResult {
         status: "action-rejected".to_string(),
         cycle: state.cycle,
@@ -721,30 +826,169 @@ fn rejection_cycle(
         commit_message: format!("self-build: learn from rejected cycle {}", state.cycle),
         should_continue: state.cycle < config.max_cycles,
         ready_for_judgment: false,
-        changed_files: vec![
-            rejection_path,
-            "EXPERIENCE.md".to_string(),
-            STATE_PATH.to_string(),
-        ],
+        changed_files,
         delay_seconds: config.loop_delay_seconds,
     })
 }
 
-fn rollback_files(backups: &[FileBackup]) -> Result<(), String> {
+fn load_memory() -> Result<SelfBuildMemory, String> {
+    let path = Path::new(MEMORY_PATH);
+    if !path.is_file() {
+        return Ok(SelfBuildMemory::default());
+    }
+    let text =
+        fs::read_to_string(path).map_err(|err| format!("failed to read {MEMORY_PATH}: {err}"))?;
+    serde_json::from_str(&text).map_err(|err| format!("invalid {MEMORY_PATH}: {err}"))
+}
+
+fn record_rejection_memory(cycle: u64, reason: &str) -> Result<(), String> {
+    let task_id = current_task()?.map(|task| task.id);
+    let directive = repair_directive_for_rejection(reason, task_id.as_deref());
+    let mut memory = load_memory().unwrap_or_default();
+    memory.latest_repair_directive = Some(directive.clone());
+    memory.active_recovery_task_id = task_id.clone();
+    memory.recent_failures.push(SelfBuildFailure {
+        cycle,
+        task_id,
+        reason: truncate(reason, 4000),
+        repair_directive: directive,
+    });
+    if memory.recent_failures.len() > 12 {
+        let keep_from = memory.recent_failures.len() - 12;
+        memory.recent_failures = memory.recent_failures.split_off(keep_from);
+    }
+    write_json(MEMORY_PATH, &memory)
+}
+
+fn record_rollback_memory(
+    cycle: u64,
+    task_id: Option<String>,
+    reason: &str,
+    rollback_status: &str,
+    rollback_artifact: &str,
+) -> Result<(), String> {
+    let mut memory = load_memory().unwrap_or_default();
+    memory.recent_rollbacks.push(SelfBuildRollbackMemory {
+        cycle,
+        task_id,
+        reason: truncate(reason, 2000),
+        rollback_status: rollback_status.to_string(),
+        rollback_artifact: rollback_artifact.to_string(),
+    });
+    if memory.recent_rollbacks.len() > 12 {
+        let keep_from = memory.recent_rollbacks.len() - 12;
+        memory.recent_rollbacks = memory.recent_rollbacks.split_off(keep_from);
+    }
+    write_json(MEMORY_PATH, &memory)
+}
+
+fn repair_directive_for_rejection(reason: &str, task_id: Option<&str>) -> String {
+    let task_hint = task_id
+        .map(|id| format!(" for current task {id}"))
+        .unwrap_or_default();
+    if reason.contains("protected runtime command surface") || reason.contains("missing markers") {
+        return format!(
+            "Recovery{task_hint}: the previous mutation tried to replace src/main.rs and removed protected runtime commands. Re-read the existing src/main.rs from context mentally, preserve every existing command arm, helper, module declaration, and self_build::* call, and make the smallest additive change only. Do not submit a shortened main.rs. If adding a command, append one match arm and one helper while keeping all protected markers."
+        );
+    }
+    if reason.contains("cargo fmt") || reason.contains("rustfmt") {
+        return format!(
+            "Recovery{task_hint}: the previous mutation was semantically close but not rustfmt-clean. Return full Rust file content already formatted by rustfmt conventions: no trailing whitespace, split long println!/format! calls, and preserve existing imports and command router."
+        );
+    }
+    if reason.contains("validation command failed") {
+        return format!(
+            "Recovery{task_hint}: the previous mutation failed validation. Use the validation stdout/stderr in failure_memory, keep the same task_id, reduce scope, and change only allowed files needed to make the exact validation command pass."
+        );
+    }
+    if reason.contains("no material file changes") || reason.contains("no valid LLM action") {
+        return format!(
+            "Recovery{task_hint}: the previous cycle produced no useful patch. Use current_task.allowed_files and current_task.validation to create one concrete, non-placeholder, validating change."
+        );
+    }
+    format!(
+        "Recovery{task_hint}: learn from the previous rejection. Do not repeat the same mutation shape. Produce the smallest task-scoped patch that satisfies current_task.validation."
+    )
+}
+
+fn rollback_files(
+    backups: &[FileBackup],
+    cycle: u64,
+    task_id: Option<&str>,
+    reason: &str,
+) -> Result<String, String> {
+    fs::create_dir_all(ROLLBACK_DIR)
+        .map_err(|err| format!("failed to create {ROLLBACK_DIR}: {err}"))?;
+    let artifact_path = format!("{ROLLBACK_DIR}/cycle-{cycle:06}.json");
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+
     for backup in backups.iter().rev() {
+        let mut restored = true;
+        let mut error = None;
         match &backup.previous {
-            Some(text) => fs::write(&backup.path, text)
-                .map_err(|err| format!("failed to restore {}: {err}", backup.path))?,
+            Some(text) => {
+                if let Err(err) = fs::write(&backup.path, text) {
+                    restored = false;
+                    let message = format!("failed to restore {}: {err}", backup.path);
+                    errors.push(message.clone());
+                    error = Some(message);
+                }
+            }
             None => {
                 let path = Path::new(&backup.path);
                 if path.exists() {
-                    fs::remove_file(path)
-                        .map_err(|err| format!("failed to remove {}: {err}", backup.path))?;
+                    if let Err(err) = fs::remove_file(path) {
+                        restored = false;
+                        let message = format!("failed to remove {}: {err}", backup.path);
+                        errors.push(message.clone());
+                        error = Some(message);
+                    }
                 }
             }
         }
+        entries.push(RollbackEntry {
+            path: backup.path.clone(),
+            existed_before: backup.previous.is_some(),
+            before_hash: backup.before_hash.clone(),
+            after_hash: backup.after_hash.clone(),
+            restored,
+            error,
+        });
     }
-    Ok(())
+
+    entries.reverse();
+    let status = if errors.is_empty() {
+        "restored".to_string()
+    } else {
+        "restore-failed".to_string()
+    };
+    let artifact = RollbackArtifact {
+        cycle,
+        task_id: task_id.map(str::to_string),
+        reason: truncate(reason, 4000),
+        status: status.clone(),
+        entries,
+        errors,
+    };
+    write_json(&artifact_path, &artifact)?;
+    record_rollback_memory(
+        cycle,
+        task_id.map(str::to_string),
+        reason,
+        &status,
+        &artifact_path,
+    )?;
+    Ok(artifact_path)
+}
+
+fn stable_content_hash(text: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv64:{hash:016x}")
 }
 
 fn run_deterministic_repair_pass(changed_files: &[String]) -> Result<(), String> {
@@ -1120,7 +1364,7 @@ fn target_cells(config: &SelfBuildConfig) -> Vec<TargetCell> {
             "runtime.self_build_engine",
             "Runtime can produce task-driven context, accept LLM patch JSON, validate it, rollback bad changes, mutate files, advance tasks, and update state.",
             "src/self_build.rs",
-            &["current_task", "advance_task_ledger", "rollback_files", "run_task_validation"],
+            &["current_task", "advance_task_ledger", "rollback_files", "record_rollback_memory", "run_task_validation"],
         ),
         proof_cell(
             "runtime.self_build_rate",

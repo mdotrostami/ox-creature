@@ -43,21 +43,42 @@ jobs:
       - name: Preflight
         shell: bash
         run: |
-          cargo fmt --all --check
-          cargo test
-          cargo run -- preflight-check
-          cargo run -- self-build-rate-seconds
-          cargo run -- self-build-context --json > state/self-build-preflight-context.json
+          mkdir -p state
+          set +e
+          {
+            cargo fmt --all --check
+            cargo test
+            cargo run -- preflight-check
+            cargo run -- self-build-rate-seconds
+            cargo run -- self-build-context --json > state/self-build-preflight-context.json
+          } > state/preflight.log 2>&1
+          status=$?
+          set -e
+          cat state/preflight.log
+          if [ "$status" -ne 0 ]; then
+            echo "PREFLIGHT_FAILED=true" >> "$GITHUB_ENV"
+            cp state/preflight.log state/workflow-failure.txt
+          else
+            echo "PREFLIGHT_FAILED=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Emit self-build context
         shell: bash
         run: |
           mkdir -p state
+          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
+            echo "Skipping LLM context because preflight failed; runtime will record recovery memory."
+            exit 0
+          fi
           cargo run -- self-build-context --json > state/self-build-context.json
 
       - name: Ask LLM for one task-scoped mutation
         shell: bash
         run: |
+          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
+            echo "Skipping LLM because preflight failed."
+            exit 0
+          fi
           rm -f state/llm-next-action.json state/llm-action-error.txt state/llm-response.json state/llm-request.json
           if [ -z "${LLM_API_KEY:-}" ]; then
             echo "LLM_API_KEY secret is missing" > state/llm-action-error.txt
@@ -86,7 +107,9 @@ jobs:
       - name: Apply one governed self-build step
         shell: bash
         run: |
-          if [ -f state/llm-next-action.json ]; then
+          if [ "${PREFLIGHT_FAILED:-false}" = "true" ]; then
+            cargo run -- self-build-step --workflow-failure state/workflow-failure.txt --json > state/self-build-result.stdout.json
+          elif [ -f state/llm-next-action.json ]; then
             cargo run -- self-build-step --action state/llm-next-action.json --json > state/self-build-result.stdout.json
           else
             cargo run -- self-build-step --json > state/self-build-result.stdout.json
