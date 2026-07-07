@@ -2,5 +2,5 @@
 // It is a tiny deterministic heartbeat proving that the creature can change itself,
 // commit the change, and continue through GitHub Actions.
 
-pub const SELF_BUILD_CYCLE: u64 = 10;
-pub const LAST_SELF_BUILD_EVENT: &str = "deterministic-fallback-cycle-10";
+pub const SELF_BUILD_CYCLE: u64 = 11;
+pub const LAST_SELF_BUILD_EVENT: &str = "deterministic-fallback-cycle-11";
